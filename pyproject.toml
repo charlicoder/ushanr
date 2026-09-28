@@ -1,0 +1,119 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ushanr"
+version = "1.0.0"
+description = "USHSPA Accounting & Reporting Microservice"
+requires-python = ">=3.12"
+dependencies = [
+    # Web framework
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "python-multipart>=0.0.12",
+
+    # Data validation
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+    "email-validator>=2.2.0",
+
+    # Database
+    "sqlalchemy[asyncio]>=2.0.36",
+    "asyncpg>=0.30.0",
+    "alembic>=1.14.0",
+
+    # HTTP client
+    "httpx>=0.27.0",
+
+    # Auth / Security
+    "python-jose[cryptography]>=3.3.0",
+    "passlib[bcrypt]>=1.7.4",
+    "cryptography>=43.0.0",
+
+    # Datetime & timezone
+    "python-dateutil>=2.9.0",
+    "pytz>=2024.2",
+
+    # Structured logging
+    "structlog>=24.4.0",
+
+    # Async helpers
+    "anyio>=4.6.0",
+
+    # Data import
+    "openpyxl>=3.1.0",
+    "pandas>=2.2.0",
+
+    # Decimal / numbers
+    "babel>=2.16.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "httpx>=0.27.0",
+    "factory-boy>=3.3.0",
+    "faker>=33.0.0",
+    "ruff>=0.8.0",
+    "mypy>=1.13.0",
+    "types-python-dateutil",
+    "types-pytz",
+    "asyncmock>=0.4.2",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+# ──────────────────────────────────────────
+# Pytest
+# ──────────────────────────────────────────
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = [
+    "--tb=short",
+    "--strict-markers",
+    "-q",
+]
+markers = [
+    "unit: Pure unit tests with no I/O",
+    "api: API integration tests",
+    "accounting: Accounting logic tests",
+]
+
+# ──────────────────────────────────────────
+# Ruff (linting + formatting)
+# ──────────────────────────────────────────
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+select = [
+    "E", "W",
+    "F",
+    "I",
+    "B",
+    "C4",
+    "UP",
+    "SIM",
+]
+ignore = [
+    "B008",  # FastAPI Depends
+]
+
+[tool.ruff.isort]
+known-first-party = ["app"]
+
+# ──────────────────────────────────────────
+# Mypy
+# ──────────────────────────────────────────
+[tool.mypy]
+python_version = "3.12"
+strict = true
+ignore_missing_imports = true
+plugins = ["pydantic.mypy"]

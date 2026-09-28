@@ -1,0 +1,12 @@
+.benchmarks
+.pytest_cache
+.venv
+
+
+.env
+
+ushanr*
+
+**/__pycache__/
+**/*.py[cod]
+
