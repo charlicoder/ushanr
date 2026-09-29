@@ -1,5 +1,5 @@
 services:
-  ushanr:
+  web:
     build:
       context: .
       dockerfile: Dockerfile
