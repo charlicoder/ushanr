@@ -626,6 +626,102 @@ async def import_payments(
     return count
 
 
+async def import_bills(
+    session: AsyncSession,
+    company_id: uuid.UUID,
+    bills_path: Path,
+    journals: dict[str, Journal],
+    partner_map: dict[str, Partner],
+) -> int:
+    """Import vendor bills and credit notes from bills.csv."""
+    if not bills_path.exists():
+        logger.warning(f"Bills file {bills_path} not found.")
+        return 0
+
+    purchase_journal = journals.get("Purchases") or journals.get("BILL") or list(journals.values())[0]
+
+    count = 0
+    with open(bills_path, "r", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            num = (row.get("Number") or "").strip()
+            if not num:
+                continue
+
+            res = await session.execute(
+                select(Invoice).where(Invoice.company_id == company_id, Invoice.name == num)
+            )
+            if res.scalar_one_or_none():
+                continue
+
+            pname = (row.get("Partner") or "").strip()
+            inv_date = parse_date(row.get("Invoice/Bill Date")) or date.today()
+            due_date = parse_date(row.get("Due Date")) or inv_date
+            ref = (row.get("Reference") or "").strip() or None
+            untaxed_amt = clean_decimal(row.get("Untaxed Amount Signed Currency"))
+            total_amt = clean_decimal(row.get("Total in Currency Signed"))
+            due_amt = clean_decimal(row.get("Amount Due Signed"))
+            status = (row.get("Status In Payment") or "").strip().lower()
+
+            is_vendor_credit = num.startswith("RBILL")
+            inv_type = InvoiceType.VENDOR_CREDIT.value if is_vendor_credit else InvoiceType.BILL.value
+            if status == "paid":
+                inv_state = InvoiceState.PAID.value
+            elif status in ("posted", "in payment"):
+                inv_state = InvoiceState.POSTED.value
+            else:
+                inv_state = InvoiceState.DRAFT.value
+
+            partner = partner_map.get(pname) or partner_map.get(pname.lower())
+            if not partner and pname:
+                partner = Partner(
+                    company_id=company_id,
+                    name=pname,
+                    display_name=pname,
+                    partner_type=PartnerType.VENDOR.value,
+                    is_vendor=True,
+                    is_customer=False,
+                    is_company=True,
+                    currency_code="KWD",
+                )
+                session.add(partner)
+                await session.flush()
+                partner_map[pname] = partner
+                partner_map[pname.lower()] = partner
+
+            if not partner:
+                continue
+
+            paid_amt = total_amt - due_amt if total_amt >= due_amt else ZERO
+            tax_amt = total_amt - untaxed_amt if total_amt >= untaxed_amt else ZERO
+
+            invoice = Invoice(
+                company_id=company_id,
+                name=num,
+                reference=ref,
+                invoice_type=inv_type,
+                state=inv_state,
+                partner_id=partner.id,
+                journal_id=purchase_journal.id,
+                invoice_date=inv_date,
+                due_date=due_date,
+                accounting_date=inv_date,
+                currency_code="KWD",
+                amount_untaxed=float(untaxed_amt),
+                amount_tax=float(tax_amt),
+                amount_total=float(total_amt),
+                amount_paid=float(paid_amt),
+                amount_residual=float(due_amt),
+                is_reversal=is_vendor_credit,
+            )
+            session.add(invoice)
+            count += 1
+
+    await session.flush()
+    logger.info(f"Vendor bills imported: {count} bills created in invoices")
+    return count
+
+
 async def link_invoices_to_journal_entries(
     session: AsyncSession, company_id: uuid.UUID
 ) -> int:
@@ -702,7 +798,10 @@ async def run_import(data_dir: Path, company_name: str = "USHSPA", dry_run: bool
             # 7. Payments
             await import_payments(session, company.id, data_dir / "payments.csv", journals, partner_map)
 
-            # 8. Link Invoices to Journal Entries
+            # 8. Vendor Bills & Credit Notes
+            await import_bills(session, company.id, data_dir / "bills.csv", journals, partner_map)
+
+            # 9. Link Invoices to Journal Entries
             await link_invoices_to_journal_entries(session, company.id)
 
             if dry_run:

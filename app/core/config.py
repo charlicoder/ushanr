@@ -34,10 +34,15 @@ class Settings(BaseSettings):
     WORKERS: int = 2
 
     # ── Database ──────────────────────────────────────────────────────────
-    DATABASE_URL: str = Field(
-        default="postgresql+asyncpg://postgres:postgres@localhost:5432/ushanr",
+    DATABASE_URL: str | None = Field(
+        default=None,
         description="Async PostgreSQL DSN",
     )
+    DB_USER: str | None = None
+    DB_PASSWORD: str | None = None
+    DB_HOST: str | None = None
+    DB_PORT: int | str = 5432
+    DB_NAME: str | None = None
     DB_POOL_SIZE: int = 10
     DB_MAX_OVERFLOW: int = 20
     DB_POOL_TIMEOUT: int = 30
@@ -46,7 +51,14 @@ class Settings(BaseSettings):
 
     @property
     def async_database_url(self) -> str:
-        url = self.DATABASE_URL
+        if self.DATABASE_URL and self.DATABASE_URL.strip():
+            url = self.DATABASE_URL.strip()
+        elif self.DB_USER and self.DB_HOST and self.DB_NAME:
+            pwd = f":{self.DB_PASSWORD}" if self.DB_PASSWORD else ""
+            url = f"postgresql+asyncpg://{self.DB_USER}{pwd}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
+        else:
+            url = "postgresql+asyncpg://postgres:postgres@localhost:5432/ushanr"
+
         if "host.docker.internal" in url:
             try:
                 import socket

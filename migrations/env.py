@@ -29,14 +29,17 @@ target_metadata = Base.metadata
 
 
 def get_url() -> str:
-    """Get database URL, preferring env var over alembic.ini."""
+    """Get database URL, preferring env var or Settings over alembic.ini."""
     import os
     import socket
 
-    url = os.environ.get(
-        "DATABASE_URL",
-        config.get_main_option("sqlalchemy.url", "postgresql+asyncpg://postgres:postgres@localhost:5432/ushanr"),
-    )
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        try:
+            from app.core.config import get_settings
+            url = get_settings().async_database_url
+        except Exception:
+            url = config.get_main_option("sqlalchemy.url", "postgresql+asyncpg://postgres:postgres@localhost:5432/ushanr")
     if "host.docker.internal" in url:
         try:
             socket.gethostbyname("host.docker.internal")
