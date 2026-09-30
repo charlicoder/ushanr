@@ -28,6 +28,7 @@ from app.api.v1.deps import get_optional_company_id
 from app.core.database import get_db
 from app.core.exceptions import ANRBaseError, EntryAlreadyPostedError
 from app.core.logging import get_logger
+from app.core.security import require_permission
 from app.models.account import Account
 from app.models.invoice import Invoice, InvoiceLine, InvoiceState, InvoiceType
 from app.models.journal_entry import JournalEntry
@@ -111,6 +112,7 @@ def _compute_line_totals(
 
 @router.get("/", summary="List invoices / bills")
 async def list_invoices(
+    _: dict = Depends(require_permission("invoices.list")),
     company_id: UUID | None = Depends(get_optional_company_id),
     invoice_type: str | None = Query(None),
     state: str | None = Query(None),
@@ -164,7 +166,8 @@ async def list_invoices(
 
 @router.post("/", status_code=status.HTTP_201_CREATED, summary="Create draft invoice / bill")
 async def create_invoice(
-    payload: dict,
+    _: dict = Depends(require_permission("invoices.create")),
+    payload: dict = None,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     raw_lines = payload.get("lines", [])
@@ -246,6 +249,7 @@ async def create_invoice(
 @router.get("/{invoice_id}/", summary="Get invoice detail")
 async def get_invoice(
     invoice_id: UUID,
+    _: dict = Depends(require_permission("invoices.view")),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     result = await db.execute(
@@ -262,7 +266,8 @@ async def get_invoice(
 @router.put("/{invoice_id}/", summary="Update draft invoice")
 async def update_invoice(
     invoice_id: UUID,
-    payload: dict,
+    _: dict = Depends(require_permission("invoices.update")),
+    payload: dict = None,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     result = await db.execute(
@@ -278,7 +283,7 @@ async def update_invoice(
 
     updatable = ["reference", "notes", "due_date", "accounting_date", "payment_terms"]
     for f in updatable:
-        if f in payload:
+        if f in (payload or {}):
             val = payload[f]
             if f in ("due_date", "accounting_date") and val:
                 val = date.fromisoformat(val)
@@ -293,6 +298,7 @@ async def update_invoice(
 @router.post("/{invoice_id}/post/", summary="Post invoice — creates journal entry")
 async def post_invoice(
     invoice_id: UUID,
+    _: dict = Depends(require_permission("invoices.post")),
     payload: dict | None = None,
     db: AsyncSession = Depends(get_db),
 ) -> dict:

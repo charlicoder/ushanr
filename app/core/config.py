@@ -93,6 +93,16 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         return self.APP_ENV == "production"
 
+    # ── Inter-service ─────────────────────────────────────────────────────
+    USHAUTH_BASE_URL: str = Field(
+        default="http://ushauth:8000",
+        description="Base URL of the ushauth service for permission resolution.",
+    )
+    USHSPA_TOKEN: str = Field(
+        default="",
+        description="Shared application token for inter-service requests.",
+    )
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:

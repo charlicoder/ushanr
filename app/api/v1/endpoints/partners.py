@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.deps import get_optional_company_id
 from app.core.database import get_db
+from app.core.security import require_permission
 from app.models.partner import Partner
 
 router = APIRouter()
@@ -58,6 +59,7 @@ async def list_partners(
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("vendors.list")),
 ) -> dict:
     q = select(Partner).where(Partner.is_deleted == False)
     if company_id is not None:
@@ -87,7 +89,11 @@ async def list_partners(
 
 
 @router.post("/", status_code=status.HTTP_201_CREATED, summary="Create partner")
-async def create_partner(payload: dict, db: AsyncSession = Depends(get_db)) -> dict:
+async def create_partner(
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("vendors.create")),
+) -> dict:
     partner = Partner(
         company_id=UUID(str(payload["company_id"])),
         name=payload["name"],
@@ -118,7 +124,11 @@ async def create_partner(payload: dict, db: AsyncSession = Depends(get_db)) -> d
 
 
 @router.get("/{partner_id}/", summary="Get partner")
-async def get_partner(partner_id: UUID, db: AsyncSession = Depends(get_db)) -> dict:
+async def get_partner(
+    partner_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("vendors.view")),
+) -> dict:
     result = await db.execute(
         select(Partner).where(Partner.id == partner_id, Partner.is_deleted == False)
     )
@@ -129,7 +139,12 @@ async def get_partner(partner_id: UUID, db: AsyncSession = Depends(get_db)) -> d
 
 
 @router.put("/{partner_id}/", summary="Update partner")
-async def update_partner(partner_id: UUID, payload: dict, db: AsyncSession = Depends(get_db)) -> dict:
+async def update_partner(
+    partner_id: UUID,
+    payload: dict,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("vendors.update")),
+) -> dict:
     result = await db.execute(
         select(Partner).where(Partner.id == partner_id, Partner.is_deleted == False)
     )
@@ -151,7 +166,11 @@ async def update_partner(partner_id: UUID, payload: dict, db: AsyncSession = Dep
 
 
 @router.delete("/{partner_id}/", status_code=status.HTTP_204_NO_CONTENT, summary="Soft-delete partner")
-async def delete_partner(partner_id: UUID, db: AsyncSession = Depends(get_db)) -> None:
+async def delete_partner(
+    partner_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("vendors.delete")),
+) -> None:
     result = await db.execute(
         select(Partner).where(Partner.id == partner_id, Partner.is_deleted == False)
     )
@@ -161,3 +180,4 @@ async def delete_partner(partner_id: UUID, db: AsyncSession = Depends(get_db)) -
     partner.is_deleted = True
     partner.deleted_at = datetime.now(timezone.utc)
     db.add(partner)
+

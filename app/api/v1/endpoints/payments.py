@@ -27,6 +27,7 @@ from app.api.v1.deps import get_optional_company_id
 from app.core.database import get_db
 from app.core.exceptions import ANRBaseError, AllocationExceedsBalanceError
 from app.core.logging import get_logger
+from app.core.security import require_permission
 from app.models.invoice import Invoice, InvoiceState
 from app.models.journal import Journal
 from app.models.payment import Payment, PaymentAllocation, PaymentState, PaymentType
@@ -93,6 +94,7 @@ async def list_payments(
     page: int = Query(1, ge=1),
     page_size: int = Query(25, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("payments.list")),
 ) -> dict:
     q = select(Payment)
     if company_id is not None:
@@ -134,6 +136,7 @@ async def list_payments(
 async def create_payment(
     payload: dict,
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("payments.create")),
 ) -> dict:
     amount = Decimal(str(payload["amount"]))
     if amount <= ZERO:
@@ -177,6 +180,7 @@ async def create_payment(
 async def get_payment(
     payment_id: UUID,
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("payments.view")),
 ) -> dict:
     result = await db.execute(
         select(Payment)
@@ -194,6 +198,7 @@ async def post_payment(
     payment_id: UUID,
     payload: dict | None = None,
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("payments.post")),
 ) -> dict:
     """
     Post a payment:
@@ -306,6 +311,7 @@ async def allocate_payment(
     payment_id: UUID,
     payload: dict,
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("payments.update")),
 ) -> dict:
     """Link a payment to an invoice (partial or full reconciliation)."""
     result = await db.execute(
@@ -392,6 +398,7 @@ async def cancel_payment(
     payment_id: UUID,
     payload: dict | None = None,
     db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_permission("payments.delete")),
 ) -> dict:
     from app.models.journal_entry import JournalEntry
     from sqlalchemy.orm import selectinload as sl
