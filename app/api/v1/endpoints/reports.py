@@ -621,3 +621,142 @@ async def cash_flow(
             "net_change": float(net),
         },
     }
+
+
+@router.get("/monthly-profit-loss/", summary="Monthly Profit and Loss trend")
+async def monthly_profit_loss(
+    company_id: UUID | None = Depends(get_optional_company_id),
+    date_from: date | None = Query(None),
+    date_to: date | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Returns month-by-month profit and loss breakdown with revenue, COGS,
+    operating expenses, net profit, and gross/net profit margins.
+    Auto-generates earnings and loss timeline.
+    """
+    if company_id is None:
+        raise HTTPException(status_code=400, detail="Company ID required")
+    if date_to is None:
+        date_to = date.today()
+    if date_from is None:
+        date_from = date(date_to.year, 1, 1)
+
+    from app.services.report_service import ReportService
+    service = ReportService(db)
+    monthly_data = await service.get_monthly_profit_and_loss(
+        company_id=company_id,
+        date_from=date_from,
+        date_to=date_to,
+    )
+
+    return {
+        "success": True,
+        "data": {
+            "company_id": str(company_id),
+            "date_from": date_from.isoformat(),
+            "date_to": date_to.isoformat(),
+            "months": [
+                {
+                    "month": m.month,
+                    "revenue": float(m.revenue),
+                    "cogs": float(m.cogs),
+                    "expenses": float(m.expenses),
+                    "gross_profit": float(m.gross_profit),
+                    "net_profit": float(m.net_profit),
+                    "gross_margin_pct": float(m.gross_margin_pct),
+                    "net_margin_pct": float(m.net_margin_pct),
+                }
+                for m in monthly_data
+            ],
+            "total_revenue": float(sum((m.revenue for m in monthly_data), Decimal("0"))),
+            "total_net_profit": float(sum((m.net_profit for m in monthly_data), Decimal("0"))),
+        },
+    }
+
+
+@router.get("/partner-financial-summary/{partner_id}", summary="360 Partner financial relation summary")
+async def partner_financial_summary(
+    partner_id: UUID,
+    company_id: UUID | None = Depends(get_optional_company_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Returns 360-degree relation report for a customer or vendor:
+    total invoiced, total settled payments, balance due, lifetime transactions.
+    """
+    if company_id is None:
+        raise HTTPException(status_code=400, detail="Company ID required")
+
+    from app.services.report_service import ReportService
+    service = ReportService(db)
+    summary = await service.get_partner_financial_summary(
+        company_id=company_id,
+        partner_id=partner_id,
+    )
+    if not summary:
+        raise HTTPException(status_code=404, detail="Partner not found")
+
+    return {
+        "success": True,
+        "data": {
+            "partner_id": str(summary.partner_id),
+            "partner_name": summary.partner_name,
+            "partner_type": summary.partner_type,
+            "total_invoiced": float(summary.total_invoiced),
+            "total_paid": float(summary.total_paid),
+            "balance_due": float(summary.balance_due),
+            "lifetime_journal_items_count": summary.lifetime_journal_items_count,
+        },
+    }
+
+
+@router.get("/analytic-profit-loss/", summary="Cost center / branch profit and loss report")
+async def analytic_profit_loss(
+    company_id: UUID | None = Depends(get_optional_company_id),
+    date_from: date | None = Query(None),
+    date_to: date | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """
+    Segments income, expenses, and net profit contribution by cost center / branch project plan.
+    """
+    if company_id is None:
+        raise HTTPException(status_code=400, detail="Company ID required")
+    if date_to is None:
+        date_to = date.today()
+    if date_from is None:
+        date_from = date(2020, 1, 1)
+
+    from app.services.report_service import ReportService
+    service = ReportService(db)
+    report = await service.get_analytic_profit_and_loss(
+        company_id=company_id,
+        date_from=date_from,
+        date_to=date_to,
+    )
+
+    return {
+        "success": True,
+        "data": {
+            "company_id": str(company_id),
+            "date_from": date_from.isoformat(),
+            "date_to": date_to.isoformat(),
+            "lines": [
+                {
+                    "account_id": str(line.account_id),
+                    "code": line.code,
+                    "name": line.name,
+                    "plan_name": line.plan_name,
+                    "revenue": float(line.revenue),
+                    "cost": float(line.cost),
+                    "net_contribution": float(line.net_contribution),
+                }
+                for line in report.lines
+            ],
+            "total_revenue": float(report.total_revenue),
+            "total_cost": float(report.total_cost),
+            "total_net": float(report.total_net),
+        },
+    }
+

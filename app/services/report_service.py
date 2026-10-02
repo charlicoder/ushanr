@@ -103,6 +103,58 @@ class ProfitLossReport:
     total_expenses: Decimal
     gross_profit: Decimal     # total_revenue - total_cogs
     net_profit: Decimal       # gross_profit - total_expenses
+    gross_margin_pct: Decimal = Decimal("0.0")
+    net_margin_pct: Decimal = Decimal("0.0")
+    ebitda: Decimal = Decimal("0.0")
+
+
+@dataclass
+class MonthlyPLBucket:
+    """Monthly breakdown of revenue, COGS, expenses, and net profit."""
+    month: str                # YYYY-MM
+    revenue: Decimal
+    cogs: Decimal
+    expenses: Decimal
+    gross_profit: Decimal
+    net_profit: Decimal
+    gross_margin_pct: Decimal
+    net_margin_pct: Decimal
+
+
+@dataclass
+class AnalyticReportLine:
+    """One cost center / project / branch summary line."""
+    account_id: UUID
+    code: str | None
+    name: str
+    plan_name: str | None
+    revenue: Decimal
+    cost: Decimal
+    net_contribution: Decimal
+
+
+@dataclass
+class AnalyticProfitLossReport:
+    """Profit and Loss broken down by cost centers / analytic branches."""
+    company_id: UUID
+    date_from: date
+    date_to: date
+    lines: list[AnalyticReportLine]
+    total_revenue: Decimal
+    total_cost: Decimal
+    total_net: Decimal
+
+
+@dataclass
+class PartnerFinancialSummary:
+    """360-degree financial overview of a partner (vendor or customer)."""
+    partner_id: UUID
+    partner_name: str
+    partner_type: str
+    total_invoiced: Decimal
+    total_paid: Decimal
+    balance_due: Decimal
+    lifetime_journal_items_count: int
 
 
 @dataclass
@@ -585,12 +637,29 @@ class ReportService:
         gross_profit = (total_revenue - total_cogs).quantize(PRECISION, rounding=ROUND_HALF_UP)
         net_profit = (gross_profit - total_expenses).quantize(PRECISION, rounding=ROUND_HALF_UP)
 
+        gross_margin_pct = (
+            (gross_profit / total_revenue * Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            if total_revenue > ZERO else ZERO
+        )
+        net_margin_pct = (
+            (net_profit / total_revenue * Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            if total_revenue > ZERO else ZERO
+        )
+        # EBITDA: Net Profit + Depreciation & Amortization (add back 5008* depreciation expense accounts)
+        deprec_amount = sum(
+            (ln.amount for ln in expense_lines if "depreciation" in ln.account_name.lower() or ln.account_code.startswith("5008")),
+            ZERO,
+        )
+        ebitda = (net_profit + deprec_amount).quantize(PRECISION, rounding=ROUND_HALF_UP)
+
         logger.info(
             "profit_loss_generated",
             company_id=str(company_id),
             date_from=str(date_from),
             date_to=str(date_to),
             net_profit=float(net_profit),
+            gross_margin_pct=float(gross_margin_pct),
+            net_margin_pct=float(net_margin_pct),
         )
 
         return ProfitLossReport(
@@ -605,6 +674,9 @@ class ReportService:
             total_expenses=total_expenses,
             gross_profit=gross_profit,
             net_profit=net_profit,
+            gross_margin_pct=gross_margin_pct,
+            net_margin_pct=net_margin_pct,
+            ebitda=ebitda,
         )
 
     # ── Balance Sheet ─────────────────────────────────────────────────────────
@@ -1248,3 +1320,224 @@ class ReportService:
             opening_cash=opening_cash,
             closing_cash=closing_cash,
         )
+
+    # ── Monthly Profit & Loss Trend ───────────────────────────────────────────
+
+    async def get_monthly_profit_and_loss(
+        self,
+        company_id: UUID,
+        date_from: date,
+        date_to: date,
+    ) -> list[MonthlyPLBucket]:
+        """
+        Compute month-by-month financial performance (revenue, COGS, expenses,
+        gross profit, net profit, margins) across a date range.
+        Auto-generates complete earnings and loss trend history.
+        """
+        target_types = [
+            AccountType.REVENUE.value,
+            AccountType.EXPENSE.value,
+            AccountType.COGS.value,
+        ]
+
+        # Extract year-month string formatted as YYYY-MM
+        month_expr = func.to_char(JournalItem.date, "YYYY-MM").label("month_str")
+
+        stmt = (
+            select(
+                month_expr,
+                Account.account_type.label("account_type"),
+                func.coalesce(func.sum(JournalItem.debit_amount), 0).label("total_debit"),
+                func.coalesce(func.sum(JournalItem.credit_amount), 0).label("total_credit"),
+            )
+            .join(JournalItem, JournalItem.account_id == Account.id)
+            .join(JournalEntry, JournalItem.entry_id == JournalEntry.id)
+            .where(
+                Account.company_id == company_id,
+                Account.is_deleted.is_(False),
+                Account.account_type.in_(target_types),
+                JournalEntry.company_id == company_id,
+                JournalEntry.state == EntryState.POSTED.value,
+                JournalItem.date >= date_from,
+                JournalItem.date <= date_to,
+            )
+            .group_by(
+                month_expr,
+                Account.account_type,
+            )
+            .order_by(month_expr.asc())
+        )
+
+        rows = (await self._session.execute(stmt)).all()
+
+        monthly_map: dict[str, dict[str, Decimal]] = {}
+        for row in rows:
+            m = row.month_str
+            if m not in monthly_map:
+                monthly_map[m] = {"revenue": ZERO, "cogs": ZERO, "expenses": ZERO}
+            
+            dr = _d(row.total_debit)
+            cr = _d(row.total_credit)
+
+            if row.account_type == AccountType.REVENUE.value:
+                # Credit-normal
+                monthly_map[m]["revenue"] += (cr - dr)
+            elif row.account_type == AccountType.COGS.value:
+                # Debit-normal
+                monthly_map[m]["cogs"] += (dr - cr)
+            else:
+                # Expense: debit-normal
+                monthly_map[m]["expenses"] += (dr - cr)
+
+        result: list[MonthlyPLBucket] = []
+        for m in sorted(monthly_map.keys()):
+            data = monthly_map[m]
+            rev = data["revenue"].quantize(PRECISION, rounding=ROUND_HALF_UP)
+            cogs = data["cogs"].quantize(PRECISION, rounding=ROUND_HALF_UP)
+            exp = data["expenses"].quantize(PRECISION, rounding=ROUND_HALF_UP)
+            gp = (rev - cogs).quantize(PRECISION, rounding=ROUND_HALF_UP)
+            np = (gp - exp).quantize(PRECISION, rounding=ROUND_HALF_UP)
+            
+            gm_pct = (gp / rev * Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if rev > ZERO else ZERO
+            nm_pct = (np / rev * Decimal("100")).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP) if rev > ZERO else ZERO
+
+            result.append(
+                MonthlyPLBucket(
+                    month=m,
+                    revenue=rev,
+                    cogs=cogs,
+                    expenses=exp,
+                    gross_profit=gp,
+                    net_profit=np,
+                    gross_margin_pct=gm_pct,
+                    net_margin_pct=nm_pct,
+                )
+            )
+
+        return result
+
+    # ── Partner Financial 360 Summary ─────────────────────────────────────────
+
+    async def get_partner_financial_summary(
+        self,
+        company_id: UUID,
+        partner_id: UUID,
+    ) -> PartnerFinancialSummary | None:
+        """
+        Aggregate comprehensive financial relations for a partner:
+        total invoiced, total payments allocated/settled, outstanding residual balance,
+        and lifetime journal items.
+        """
+        # 1. Partner lookup
+        partner_stmt = select(Partner).where(
+            Partner.id == partner_id,
+            Partner.company_id == company_id,
+            Partner.is_deleted.is_(False),
+        )
+        partner = (await self._session.execute(partner_stmt)).scalar_one_or_none()
+        if not partner:
+            return None
+
+        # 2. Invoices aggregated
+        inv_stmt = select(
+            func.coalesce(func.sum(Invoice.amount_total), 0).label("tot_invoiced"),
+            func.coalesce(func.sum(Invoice.amount_residual), 0).label("tot_residual"),
+        ).where(
+            Invoice.company_id == company_id,
+            Invoice.partner_id == partner_id,
+            Invoice.state.in_([InvoiceState.POSTED.value, InvoiceState.PAID.value]),
+        )
+        inv_res = (await self._session.execute(inv_stmt)).one()
+        tot_invoiced = _d(inv_res.tot_invoiced)
+        balance_due = _d(inv_res.tot_residual)
+        tot_paid = (tot_invoiced - balance_due).quantize(PRECISION, rounding=ROUND_HALF_UP)
+
+        # 3. Count lifetime journal items
+        ji_stmt = select(func.count(JournalItem.id)).where(
+            JournalItem.company_id == company_id,
+            JournalItem.partner_id == partner_id,
+        )
+        ji_count = (await self._session.execute(ji_stmt)).scalar_one() or 0
+
+        return PartnerFinancialSummary(
+            partner_id=partner.id,
+            partner_name=partner.name,
+            partner_type=partner.partner_type.value if hasattr(partner.partner_type, "value") else str(partner.partner_type),
+            total_invoiced=tot_invoiced,
+            total_paid=tot_paid,
+            balance_due=balance_due,
+            lifetime_journal_items_count=ji_count,
+        )
+
+    # ── Analytic Profit & Loss Report ─────────────────────────────────────────
+
+    async def get_analytic_profit_and_loss(
+        self,
+        company_id: UUID,
+        date_from: date,
+        date_to: date,
+    ) -> AnalyticProfitLossReport:
+        """
+        Profit & Loss segmented by analytic accounts (cost centers / branch plans).
+        """
+        from app.models.analytic import AnalyticAccount, AnalyticItem, AnalyticPlan
+
+        stmt = (
+            select(
+                AnalyticAccount.id.label("account_id"),
+                AnalyticAccount.code.label("code"),
+                AnalyticAccount.name.label("name"),
+                AnalyticPlan.name.label("plan_name"),
+                func.coalesce(func.sum(case((AnalyticItem.amount > 0, AnalyticItem.amount), else_=0)), 0).label("revenue"),
+                func.coalesce(func.sum(case((AnalyticItem.amount < 0, -AnalyticItem.amount), else_=0)), 0).label("cost"),
+            )
+            .join(AnalyticPlan, AnalyticAccount.plan_id == AnalyticPlan.id)
+            .join(AnalyticItem, AnalyticItem.analytic_account_id == AnalyticAccount.id)
+            .where(
+                AnalyticAccount.company_id == company_id,
+                AnalyticItem.date >= date_from,
+                AnalyticItem.date <= date_to,
+            )
+            .group_by(
+                AnalyticAccount.id,
+                AnalyticAccount.code,
+                AnalyticAccount.name,
+                AnalyticPlan.name,
+            )
+            .order_by(AnalyticAccount.name.asc())
+        )
+
+        rows = (await self._session.execute(stmt)).all()
+
+        lines: list[AnalyticReportLine] = []
+        tot_rev = ZERO
+        tot_cost = ZERO
+
+        for r in rows:
+            rev = _d(r.revenue)
+            cost = _d(r.cost)
+            net = (rev - cost).quantize(PRECISION, rounding=ROUND_HALF_UP)
+            tot_rev += rev
+            tot_cost += cost
+            lines.append(
+                AnalyticReportLine(
+                    account_id=r.account_id,
+                    code=r.code,
+                    name=r.name,
+                    plan_name=r.plan_name,
+                    revenue=rev,
+                    cost=cost,
+                    net_contribution=net,
+                )
+            )
+
+        return AnalyticProfitLossReport(
+            company_id=company_id,
+            date_from=date_from,
+            date_to=date_to,
+            lines=lines,
+            total_revenue=tot_rev.quantize(PRECISION, rounding=ROUND_HALF_UP),
+            total_cost=tot_cost.quantize(PRECISION, rounding=ROUND_HALF_UP),
+            total_net=(tot_rev - tot_cost).quantize(PRECISION, rounding=ROUND_HALF_UP),
+        )
+

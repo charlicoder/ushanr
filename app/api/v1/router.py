@@ -10,6 +10,7 @@ from fastapi import APIRouter
 from app.api.v1.endpoints import (
     accounts,
     analytic,
+    assets,
     bank,
     budgets,
     companies,
@@ -38,6 +39,7 @@ api_router.include_router(journals.router, prefix="/journals", tags=["Journals"]
 api_router.include_router(taxes.router, prefix="/taxes", tags=["Taxes"])
 api_router.include_router(fiscal.router, prefix="/fiscal", tags=["Fiscal"])
 api_router.include_router(analytic.router, prefix="/analytic", tags=["Analytic"])
+api_router.include_router(assets.router, prefix="/assets", tags=["Assets"])
 
 # Transactions
 api_router.include_router(

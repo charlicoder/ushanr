@@ -177,6 +177,9 @@ class PnLResponse(BaseModel):
         ...,
         description="gross_profit − total_operating_expenses",
     )
+    gross_margin_pct: Decimal = Field(default=Decimal("0.0"), description="Gross Profit / Revenue %")
+    net_margin_pct: Decimal = Field(default=Decimal("0.0"), description="Net Income / Revenue %")
+    ebitda: Decimal = Field(default=Decimal("0.0"), description="Earnings before interest, taxes, depreciation & amortization")
     generated_at: datetime = Field(default_factory=datetime.utcnow)
 
 
@@ -314,4 +317,98 @@ class APAgingResponse(BaseModel):
         description="Aggregated totals across all partners for each bucket",
     )
     grand_total: Decimal = Field(..., description="Total AP outstanding")
+    generated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
+# Monthly Profit & Loss / Trend
+# ---------------------------------------------------------------------------
+
+class MonthlyPLBucketResponse(BaseModel):
+    """Monthly summary row in the monthly P&L trend report."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    month: str = Field(..., description="Month in YYYY-MM format")
+    revenue: Decimal
+    cogs: Decimal
+    expenses: Decimal
+    gross_profit: Decimal
+    net_profit: Decimal
+    gross_margin_pct: Decimal
+    net_margin_pct: Decimal
+
+
+class MonthlyProfitLossResponse(BaseModel):
+    """Multi-month Profit & Loss and earnings trend report."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    company_id: UUID
+    date_from: date
+    date_to: date
+    currency_code: str
+    months: list[MonthlyPLBucketResponse] = Field(default_factory=list)
+    total_revenue: Decimal
+    total_cogs: Decimal
+    total_expenses: Decimal
+    total_gross_profit: Decimal
+    total_net_profit: Decimal
+    overall_gross_margin_pct: Decimal
+    overall_net_margin_pct: Decimal
+    generated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
+# Analytic / Cost Center Profit & Loss
+# ---------------------------------------------------------------------------
+
+class AnalyticReportLineResponse(BaseModel):
+    """Cost center / branch profitability line."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    account_id: UUID
+    code: str | None
+    name: str
+    plan_name: str | None
+    revenue: Decimal
+    cost: Decimal
+    net_contribution: Decimal
+
+
+class AnalyticProfitLossResponse(BaseModel):
+    """Profit & Loss by cost center / branch (analytic accounts)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    company_id: UUID
+    date_from: date
+    date_to: date
+    currency_code: str
+    lines: list[AnalyticReportLineResponse] = Field(default_factory=list)
+    total_revenue: Decimal
+    total_cost: Decimal
+    total_net: Decimal
+    generated_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ---------------------------------------------------------------------------
+# Partner Financial 360 Summary
+# ---------------------------------------------------------------------------
+
+class PartnerFinancialSummaryResponse(BaseModel):
+    """360-degree financial overview of a partner."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    company_id: UUID
+    partner_id: UUID
+    partner_name: str
+    partner_type: str
+    total_invoiced: Decimal
+    total_paid: Decimal
+    balance_due: Decimal
+    lifetime_journal_items_count: int
+    currency_code: str
     generated_at: datetime = Field(default_factory=datetime.utcnow)

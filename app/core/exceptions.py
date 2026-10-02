@@ -72,6 +72,12 @@ class AllocationExceedsBalanceError(ANRBaseError):
     code = "ALLOCATION_EXCEEDS_BALANCE"
 
 
+class AccountingError(ANRBaseError):
+    """Raised when an accounting rule or invariant is violated."""
+    status_code = 400
+    code = "ACCOUNTING_ERROR"
+
+
 # ── HTTP 403 ──────────────────────────────────────────────────────────────────
 
 class ForbiddenOperationError(ANRBaseError):
@@ -108,6 +114,10 @@ class InvoiceNotFoundError(NotFoundError):
 
 class PaymentNotFoundError(NotFoundError):
     code = "PAYMENT_NOT_FOUND"
+
+
+class AssetNotFoundError(NotFoundError):
+    code = "ASSET_NOT_FOUND"
 
 
 class FiscalYearNotFoundError(NotFoundError):

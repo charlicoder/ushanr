@@ -16,5 +16,6 @@ from app.models.journal import Journal  # noqa: F401
 from app.models.journal_entry import JournalEntry, JournalItem  # noqa: F401
 from app.models.partner import Partner  # noqa: F401
 from app.models.payment import Payment, PaymentAllocation  # noqa: F401
+from app.models.asset import Asset, AssetDepreciationLine  # noqa: F401
 from app.models.sequence import DocumentSequence  # noqa: F401
 from app.models.tax import Tax, TaxGroup  # noqa: F401
