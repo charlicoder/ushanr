@@ -55,6 +55,7 @@ from app.models.invoice import (
 )
 from app.models.journal_entry import EntryState, JournalEntry
 from app.models.journal import Journal
+from app.models.sequence import DocumentSequence
 from app.services.double_entry import (
     DoubleEntryEngine,
     JournalEntryData,
@@ -120,6 +121,7 @@ class CreateInvoiceData:
     lines: list[InvoiceLineData]
 
     # Optional fields
+    name: str | None = None
     payment_terms: str = PaymentTerms.IMMEDIATE.value
     payment_terms_days: int = 0
     currency_code: str = "KWD"
@@ -313,6 +315,74 @@ class InvoiceService:
             )
         return account
 
+    async def _generate_invoice_name(
+        self,
+        company_id: UUID,
+        invoice_type: str,
+        invoice_date: date | None = None,
+    ) -> str:
+        """
+        Generate the next sequential invoice number for the company and invoice type.
+        E.g. INV/2026/00011, RINV/2026/00001, BILL/2026/00001.
+        """
+        prefix_map = {
+            InvoiceType.INVOICE.value: "INV",
+            InvoiceType.CREDIT_NOTE.value: "RINV",
+            InvoiceType.BILL.value: "BILL",
+            InvoiceType.VENDOR_CREDIT.value: "RBILL",
+        }
+        prefix = prefix_map.get(invoice_type, "INV")
+        year = invoice_date.year if invoice_date else date.today().year
+
+        # Find highest existing number matching prefix/year in Invoice table
+        pattern = f"{prefix}/{year}/%"
+        existing_stmt = select(Invoice.name).where(
+            Invoice.company_id == company_id,
+            Invoice.name.like(pattern),
+        )
+        existing_names = (await self._session.execute(existing_stmt)).scalars().all()
+        highest_num = 0
+        for n in existing_names:
+            if not n:
+                continue
+            parts = n.split("/")
+            if parts and parts[-1].isdigit():
+                val = int(parts[-1])
+                if val > highest_num:
+                    highest_num = val
+
+        # Query DocumentSequence if exists
+        seq_stmt = select(DocumentSequence).where(
+            DocumentSequence.company_id == company_id,
+            DocumentSequence.prefix == prefix,
+            DocumentSequence.is_active == True,
+        )
+        seq_result = await self._session.execute(seq_stmt)
+        seq = seq_result.scalar_one_or_none()
+
+        padding = 5
+        if seq is not None:
+            padding = seq.padding or 5
+            next_num = max(seq.next_number, highest_num + 1)
+            seq.next_number = next_num + (seq.step or 1)
+            self._session.add(seq)
+        else:
+            next_num = highest_num + 1
+            seq = DocumentSequence(
+                company_id=company_id,
+                name=f"{prefix} Sequence",
+                code=f"{prefix.lower()}_sequence",
+                prefix=prefix,
+                next_number=next_num + 1,
+                step=1,
+                padding=padding,
+                use_date_range=True,
+                is_active=True,
+            )
+            self._session.add(seq)
+
+        return f"{prefix}/{year}/{str(next_num).zfill(padding)}"
+
     # ── CRUD ──────────────────────────────────────────────────────────────────
 
     async def create_invoice(self, data: CreateInvoiceData) -> Invoice:
@@ -336,7 +406,17 @@ class InvoiceService:
         )
         effective_due = data.due_date or computed_due
 
+        # Generate sequential name if not provided
+        invoice_name = data.name
+        if not invoice_name:
+            invoice_name = await self._generate_invoice_name(
+                company_id=data.company_id,
+                invoice_type=data.invoice_type,
+                invoice_date=data.invoice_date,
+            )
+
         invoice = Invoice(
+            name=invoice_name,
             company_id=data.company_id,
             partner_id=data.partner_id,
             journal_id=data.journal_id,
@@ -347,7 +427,7 @@ class InvoiceService:
             payment_terms=data.payment_terms,
             payment_terms_days=data.payment_terms_days,
             currency_code=data.currency_code,
-            reference=data.reference,
+            reference=data.reference or data.source_document_ref,
             notes=data.notes,
             state=InvoiceState.DRAFT.value,
             amount_untaxed=float(amount_untaxed),
@@ -492,6 +572,16 @@ class InvoiceService:
         lines: list[InvoiceLine] = invoice.lines
         if not lines:
             raise ValidationError("Cannot post an invoice with no lines.")
+
+        # Ensure invoice has sequential name and reference before posting
+        if not invoice.name:
+            invoice.name = await self._generate_invoice_name(
+                company_id=invoice.company_id,
+                invoice_type=invoice.invoice_type,
+                invoice_date=invoice.invoice_date,
+            )
+        if not invoice.reference and invoice.source_document_ref:
+            invoice.reference = invoice.source_document_ref
 
         is_customer = self._is_customer_doc(invoice.invoice_type)
         is_credit = self._is_credit_type(invoice.invoice_type)

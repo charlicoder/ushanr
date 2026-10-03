@@ -16,6 +16,7 @@ from app.api.v1.endpoints import (
     companies,
     fiscal,
     health,
+    internal,
     invoices,
     journal_entries,
     journal_items,
@@ -59,3 +60,6 @@ api_router.include_router(budgets.router, prefix="/budgets", tags=["Budgets"])
 
 # Reports
 api_router.include_router(reports.router, prefix="/reports", tags=["Reports"])
+
+# Internal (service-to-service only — protected by X-Internal-Key)
+api_router.include_router(internal.router, prefix="/internal", tags=["Internal"])

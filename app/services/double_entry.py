@@ -30,7 +30,9 @@ from app.core.exceptions import (
 )
 from app.core.logging import get_logger
 from app.models.fiscal import AccountingPeriod, PeriodState
+from app.models.journal import Journal
 from app.models.journal_entry import EntryState, JournalEntry, JournalItem
+from app.models.sequence import DocumentSequence
 
 logger = get_logger(__name__)
 
@@ -145,6 +147,95 @@ class DoubleEntryEngine:
             )
         return period
 
+    async def _generate_entry_name(
+        self,
+        session: AsyncSession,
+        company_id: UUID,
+        journal_id: UUID,
+        entry_date: date | None = None,
+    ) -> str:
+        """
+        Generate sequential journal entry name.
+        Uses journal sequence_prefix or journal code (e.g. MISC/2026/09/0001, BNK/2026/09/0001).
+        """
+        dt = entry_date or date.today()
+        year = dt.year
+        month = dt.month
+
+        journal_res = await session.execute(
+            select(Journal).where(Journal.id == journal_id)
+        )
+        journal = journal_res.scalar_one_or_none()
+
+        prefix = "MISC"
+        padding = 4
+        if journal:
+            prefix = (journal.sequence_prefix or journal.code or "MISC").upper()
+            padding = journal.sequence_padding or 4
+
+        year_prefix_pattern = f"{prefix}/{year}/%"
+        existing_stmt = select(JournalEntry.name).where(
+            JournalEntry.company_id == company_id,
+            JournalEntry.name.like(year_prefix_pattern),
+        )
+        existing_names = (await session.execute(existing_stmt)).scalars().all()
+
+        highest_num = 0
+        use_month_format = True
+        for n in existing_names:
+            if not n:
+                continue
+            parts = n.split("/")
+            if len(parts) == 4 and parts[-1].isdigit():
+                if parts[2] == f"{month:02d}":
+                    val = int(parts[-1])
+                    if val > highest_num:
+                        highest_num = val
+                use_month_format = True
+            elif len(parts) == 3 and parts[-1].isdigit():
+                val = int(parts[-1])
+                if val > highest_num:
+                    highest_num = val
+                use_month_format = False
+
+        seq_code = (
+            f"journal_{prefix.lower()}_{year}_{month:02d}"
+            if use_month_format
+            else f"journal_{prefix.lower()}_{year}"
+        )
+        seq_stmt = select(DocumentSequence).where(
+            DocumentSequence.company_id == company_id,
+            DocumentSequence.code == seq_code,
+            DocumentSequence.is_active == True,
+        )
+        seq_res = await session.execute(seq_stmt)
+        seq = seq_res.scalar_one_or_none()
+
+        if seq is not None:
+            padding = seq.padding or padding
+            next_num = max(seq.next_number, highest_num + 1)
+            seq.next_number = next_num + (seq.step or 1)
+            session.add(seq)
+        else:
+            next_num = highest_num + 1
+            seq = DocumentSequence(
+                company_id=company_id,
+                name=f"{prefix} Sequence",
+                code=seq_code,
+                prefix=prefix,
+                next_number=next_num + 1,
+                step=1,
+                padding=padding,
+                use_date_range=True,
+                is_active=True,
+            )
+            session.add(seq)
+
+        if use_month_format:
+            return f"{prefix}/{year}/{month:02d}/{str(next_num).zfill(padding)}"
+        else:
+            return f"{prefix}/{year}/{str(next_num).zfill(padding)}"
+
     async def create_draft_entry(
         self,
         session: AsyncSession,
@@ -162,12 +253,39 @@ class DoubleEntryEngine:
         accounting_date = data.accounting_date or data.entry_date
         total = sum((item.debit for item in data.items), ZERO)
 
+        # Determine name, reference, and narration if not provided
+        entry_name = data.name
+        entry_reference = data.reference
+        entry_narration = data.narration
+
+        if not entry_name:
+            if data.source_document_type == "invoice" and data.source_document_id:
+                from app.models.invoice import Invoice
+                inv_res = await session.execute(
+                    select(Invoice).where(Invoice.id == data.source_document_id)
+                )
+                inv = inv_res.scalar_one_or_none()
+                if inv and inv.name:
+                    entry_name = inv.name
+                    if not entry_reference:
+                        entry_reference = inv.reference or inv.source_document_ref
+                    if not entry_narration or str(inv.id) in (entry_narration or ""):
+                        entry_narration = f"{inv.invoice_type.upper()}: {inv.name}"
+
+            if not entry_name:
+                entry_name = await self._generate_entry_name(
+                    session,
+                    company_id=data.company_id,
+                    journal_id=data.journal_id,
+                    entry_date=accounting_date,
+                )
+
         entry = JournalEntry(
             company_id=data.company_id,
             journal_id=data.journal_id,
-            name=data.name,
-            reference=data.reference,
-            narration=data.narration,
+            name=entry_name,
+            reference=entry_reference,
+            narration=entry_narration,
             partner_id=data.partner_id,
             entry_date=data.entry_date,
             accounting_date=accounting_date,
@@ -238,14 +356,18 @@ class DoubleEntryEngine:
                 f"Journal entry {entry.name or entry.id} is cancelled."
             )
 
-        # Re-validate balance from stored items
+        # Re-validate balance from stored items (use async query to prevent MissingGreenlet)
+        items_result = await session.execute(
+            select(JournalItem).where(JournalItem.entry_id == entry.id).order_by(JournalItem.sequence)
+        )
+        entry_items = items_result.scalars().all()
         items_data = [
             JournalItemData(
                 account_id=item.account_id,
                 debit=Decimal(str(item.debit_amount)),
                 credit=Decimal(str(item.credit_amount)),
             )
-            for item in entry.items
+            for item in entry_items
         ]
         self.validate_balance(items_data)
 
@@ -253,6 +375,37 @@ class DoubleEntryEngine:
         period = await self.validate_period_open(
             session, entry.company_id, entry.accounting_date
         )
+
+        # Ensure sequential name and reference before posting
+        if not entry.name:
+            if entry.source_document_type == "invoice" and entry.source_document_id:
+                from app.models.invoice import Invoice
+                inv_res = await session.execute(
+                    select(Invoice).where(Invoice.id == entry.source_document_id)
+                )
+                inv = inv_res.scalar_one_or_none()
+                if inv:
+                    if not inv.name:
+                        from app.services.invoice_service import InvoiceService
+                        inv_svc = InvoiceService(session)
+                        inv.name = await inv_svc._generate_invoice_name(
+                            inv.company_id, inv.invoice_type, inv.invoice_date
+                        )
+                        session.add(inv)
+                    if not inv.reference and inv.source_document_ref:
+                        inv.reference = inv.source_document_ref
+                        session.add(inv)
+                    entry.name = inv.name
+                    entry.reference = entry.reference or inv.reference or inv.source_document_ref
+                    entry.narration = f"{inv.invoice_type.upper()}: {inv.name}"
+
+            if not entry.name:
+                entry.name = await self._generate_entry_name(
+                    session,
+                    company_id=entry.company_id,
+                    journal_id=entry.journal_id,
+                    entry_date=entry.accounting_date or entry.entry_date,
+                )
 
         entry.state = EntryState.POSTED.value
         entry.posted_at = datetime.now(timezone.utc)
@@ -300,6 +453,10 @@ class DoubleEntryEngine:
                 f"Can only reverse POSTED entries. Entry {entry.id} is {entry.state}."
             )
 
+        items_result = await session.execute(
+            select(JournalItem).where(JournalItem.entry_id == entry.id).order_by(JournalItem.sequence)
+        )
+        entry_items = items_result.scalars().all()
         reversal_items = [
             JournalItemData(
                 account_id=item.account_id,
@@ -315,7 +472,7 @@ class DoubleEntryEngine:
                 currency_rate=Decimal(str(item.currency_rate)) if item.currency_rate else None,
                 sequence=item.sequence,
             )
-            for item in entry.items
+            for item in entry_items
         ]
 
         reversal_data = JournalEntryData(

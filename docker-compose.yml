@@ -13,6 +13,8 @@ services:
       - "host.docker.internal:host-gateway"
     env_file:
       - .env
+    environment:
+      - IN_DOCKER=1
     networks:
       - ushspa-network
     volumes:

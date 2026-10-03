@@ -34,6 +34,7 @@ from app.models.invoice import Invoice, InvoiceLine, InvoiceState, InvoiceType
 from app.models.journal_entry import JournalEntry
 from app.models.partner import Partner
 from app.services.double_entry import JournalEntryData, JournalItemData, double_entry_engine
+from app.services.invoice_service import InvoiceService
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -67,7 +68,7 @@ def _invoice_to_dict(inv: Invoice) -> dict:
         "id": str(inv.id),
         "company_id": str(inv.company_id),
         "name": inv.name,
-        "reference": inv.reference,
+        "reference": inv.reference or inv.source_document_ref,
         "invoice_type": inv.invoice_type,
         "state": inv.state,
         "partner_id": str(inv.partner_id),
@@ -152,6 +153,22 @@ async def list_invoices(
         .limit(page_size)
     )
     rows = (await db.execute(q)).scalars().all()
+
+    # Auto-heal any existing invoices where name is missing
+    needs_commit = False
+    svc = InvoiceService(db)
+    for inv in rows:
+        if not inv.name:
+            inv.name = await svc._generate_invoice_name(
+                inv.company_id, inv.invoice_type, inv.invoice_date
+            )
+            needs_commit = True
+        if not inv.reference and inv.source_document_ref:
+            inv.reference = inv.source_document_ref
+            needs_commit = True
+    if needs_commit:
+        await db.commit()
+
     return {
         "success": True,
         "data": {
@@ -176,7 +193,19 @@ async def create_invoice(
 
     inv_type = payload.get("invoice_type", InvoiceType.INVOICE.value)
 
+    # Generate sequential name if not provided
+    svc = InvoiceService(db)
+    inv_name = payload.get("name")
+    if not inv_name:
+        inv_name = await svc._generate_invoice_name(
+            UUID(str(payload["company_id"])),
+            inv_type,
+            date.fromisoformat(payload["invoice_date"]),
+        )
+    ref = payload.get("reference") or payload.get("source_document_ref")
+
     invoice = Invoice(
+        name=inv_name,
         company_id=UUID(str(payload["company_id"])),
         journal_id=UUID(str(payload["journal_id"])),
         partner_id=UUID(str(payload["partner_id"])),
@@ -188,7 +217,7 @@ async def create_invoice(
         payment_terms=payload.get("payment_terms", "immediate"),
         payment_terms_days=payload.get("payment_terms_days", 0),
         currency_code=payload.get("currency_code", "KWD"),
-        reference=payload.get("reference"),
+        reference=ref,
         notes=payload.get("notes"),
         source_document_type=payload.get("source_document_type"),
         source_document_id=payload.get("source_document_id"),
@@ -260,6 +289,20 @@ async def get_invoice(
     inv = result.scalar_one_or_none()
     if not inv:
         raise HTTPException(status_code=404, detail="Invoice not found")
+
+    needs_commit = False
+    if not inv.name:
+        svc = InvoiceService(db)
+        inv.name = await svc._generate_invoice_name(
+            inv.company_id, inv.invoice_type, inv.invoice_date
+        )
+        needs_commit = True
+    if not inv.reference and inv.source_document_ref:
+        inv.reference = inv.source_document_ref
+        needs_commit = True
+    if needs_commit:
+        await db.commit()
+
     return {"success": True, "data": _invoice_to_dict(inv)}
 
 
@@ -352,6 +395,15 @@ async def post_invoice(
                 detail="No receivable/payable account configured. Set it on the partner or journal.",
             )
 
+        # Ensure sequential name and reference are populated
+        if not inv.name:
+            svc = InvoiceService(db)
+            inv.name = await svc._generate_invoice_name(
+                inv.company_id, inv.invoice_type, inv.invoice_date
+            )
+        if not inv.reference and inv.source_document_ref:
+            inv.reference = inv.source_document_ref
+
         # Line items: Revenue/Expense per line
         for line in inv.lines:
             line_amount = Decimal(str(line.subtotal))
@@ -440,12 +492,6 @@ async def post_invoice(
 
         journal_entry = await double_entry_engine.create_and_post_entry(db, entry_data)
 
-        # Generate name if not set
-        if not inv.name:
-            prefix = "INV" if is_sale else "BILL"
-            year = inv.invoice_date.year
-            inv.name = f"{prefix}/{year}/{str(inv.id)[:8].upper()}"
-
         inv.state = InvoiceState.POSTED.value
         inv.journal_entry_id = journal_entry.id
         inv.accounting_date = inv.accounting_date or inv.invoice_date
@@ -533,13 +579,18 @@ async def create_credit_note(
         else InvoiceType.VENDOR_CREDIT.value
     )
 
+    cn_date = (payload or {}).get("credit_date") and date.fromisoformat((payload or {})["credit_date"]) or date.today()
+    svc = InvoiceService(db)
+    cn_name = await svc._generate_invoice_name(inv.company_id, cn_type, cn_date)
+
     credit_note = Invoice(
+        name=cn_name,
         company_id=inv.company_id,
         journal_id=inv.journal_id,
         partner_id=inv.partner_id,
         invoice_type=cn_type,
         state=InvoiceState.DRAFT.value,
-        invoice_date=(payload or {}).get("credit_date") and date.fromisoformat((payload or {})["credit_date"]) or date.today(),
+        invoice_date=cn_date,
         currency_code=inv.currency_code,
         reference=f"Credit note for {inv.name or inv.id}",
         reversed_invoice_id=inv.id,

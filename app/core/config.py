@@ -57,14 +57,29 @@ class Settings(BaseSettings):
             pwd = f":{self.DB_PASSWORD}" if self.DB_PASSWORD else ""
             url = f"postgresql+asyncpg://{self.DB_USER}{pwd}@{self.DB_HOST}:{self.DB_PORT}/{self.DB_NAME}"
         else:
-            url = "postgresql+asyncpg://postgres:postgres@localhost:5432/ushanr"
+            url = "postgresql+asyncpg://postgres:postgres@host.docker.internal:5432/ushanr"
 
-        if "host.docker.internal" in url:
-            try:
-                import socket
-                socket.gethostbyname("host.docker.internal")
-            except Exception:
-                url = url.replace("host.docker.internal", "localhost")
+        import os
+        is_container = os.path.exists("/.dockerenv") or bool(os.environ.get("IN_DOCKER"))
+
+        if is_container:
+            # Inside Docker container: localhost/127.0.0.1 refers to the container itself.
+            # If host.docker.internal is available, route to the host machine.
+            if "@localhost:" in url or "@127.0.0.1:" in url:
+                try:
+                    import socket
+                    socket.gethostbyname("host.docker.internal")
+                    url = url.replace("@localhost:", "@host.docker.internal:").replace("@127.0.0.1:", "@host.docker.internal:")
+                except Exception:
+                    pass
+        else:
+            # Outside Docker (local machine): host.docker.internal might not resolve.
+            if "host.docker.internal" in url:
+                try:
+                    import socket
+                    socket.gethostbyname("host.docker.internal")
+                except Exception:
+                    url = url.replace("host.docker.internal", "localhost")
         return url
 
     # ── Base paths ────────────────────────────────────────────────────────
@@ -101,6 +116,10 @@ class Settings(BaseSettings):
     USHSPA_TOKEN: str = Field(
         default="",
         description="Shared application token for inter-service requests.",
+    )
+    INTERNAL_API_KEY: str = Field(
+        default="ushanr-internal-secret-change-in-prod",
+        description="Shared secret for internal service-to-service endpoints (X-Internal-Key header).",
     )
 
 

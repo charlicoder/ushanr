@@ -25,6 +25,7 @@ from app.api.v1.deps import get_optional_company_id
 from app.core.database import get_db
 from app.core.exceptions import ANRBaseError
 from app.core.logging import get_logger
+from app.models.invoice import Invoice
 from app.models.journal_entry import EntryState, JournalEntry, JournalItem
 from app.services.double_entry import JournalEntryData, JournalItemData, double_entry_engine
 
@@ -118,6 +119,49 @@ async def list_journal_entries(
     )
     rows = (await db.execute(q)).scalars().all()
 
+    # Auto-heal any journal entries where name/reference is missing or narration has raw UUID
+    needs_commit = False
+    for entry in rows:
+        is_invoice = (entry.source_document_type == "invoice" and entry.source_document_id is not None)
+        has_uuid_memo = bool(entry.narration and "INVOICE:" in entry.narration and "-" in entry.narration)
+
+        if not entry.name or not entry.reference or (is_invoice and has_uuid_memo):
+            if is_invoice:
+                inv_res = await db.execute(
+                    select(Invoice).where(Invoice.id == entry.source_document_id)
+                )
+                inv = inv_res.scalar_one_or_none()
+                if inv:
+                    if not inv.name:
+                        from app.services.invoice_service import InvoiceService
+                        inv_svc = InvoiceService(db)
+                        inv.name = await inv_svc._generate_invoice_name(inv.company_id, inv.invoice_type, inv.invoice_date)
+                        db.add(inv)
+                    if not inv.reference and inv.source_document_ref:
+                        inv.reference = inv.source_document_ref
+                        db.add(inv)
+                    if not entry.name or entry.name != inv.name:
+                        entry.name = inv.name
+                        needs_commit = True
+                    if not entry.reference:
+                        entry.reference = inv.reference or inv.source_document_ref
+                        needs_commit = True
+                    if not entry.narration or str(inv.id) in entry.narration:
+                        entry.narration = f"{inv.invoice_type.upper()}: {inv.name}"
+                        needs_commit = True
+
+            if not entry.name:
+                entry.name = await double_entry_engine._generate_entry_name(
+                    db,
+                    company_id=entry.company_id,
+                    journal_id=entry.journal_id,
+                    entry_date=entry.accounting_date or entry.entry_date,
+                )
+                needs_commit = True
+
+    if needs_commit:
+        await db.commit()
+
     return {
         "success": True,
         "data": {
@@ -203,6 +247,48 @@ async def get_journal_entry(
     entry = result.scalar_one_or_none()
     if not entry:
         raise HTTPException(status_code=404, detail="Journal entry not found")
+
+    needs_commit = False
+    is_invoice = (entry.source_document_type == "invoice" and entry.source_document_id is not None)
+    has_uuid_memo = bool(entry.narration and "INVOICE:" in entry.narration and "-" in entry.narration)
+
+    if not entry.name or not entry.reference or (is_invoice and has_uuid_memo):
+        if is_invoice:
+            inv_res = await db.execute(
+                select(Invoice).where(Invoice.id == entry.source_document_id)
+            )
+            inv = inv_res.scalar_one_or_none()
+            if inv:
+                if not inv.name:
+                    from app.services.invoice_service import InvoiceService
+                    inv_svc = InvoiceService(db)
+                    inv.name = await inv_svc._generate_invoice_name(inv.company_id, inv.invoice_type, inv.invoice_date)
+                    db.add(inv)
+                if not inv.reference and inv.source_document_ref:
+                    inv.reference = inv.source_document_ref
+                    db.add(inv)
+                if not entry.name or entry.name != inv.name:
+                    entry.name = inv.name
+                    needs_commit = True
+                if not entry.reference:
+                    entry.reference = inv.reference or inv.source_document_ref
+                    needs_commit = True
+                if not entry.narration or str(inv.id) in entry.narration:
+                    entry.narration = f"{inv.invoice_type.upper()}: {inv.name}"
+                    needs_commit = True
+
+        if not entry.name:
+            entry.name = await double_entry_engine._generate_entry_name(
+                db,
+                company_id=entry.company_id,
+                journal_id=entry.journal_id,
+                entry_date=entry.accounting_date or entry.entry_date,
+            )
+            needs_commit = True
+
+    if needs_commit:
+        await db.commit()
+
     return {"success": True, "data": _entry_to_dict(entry)}
 
 
