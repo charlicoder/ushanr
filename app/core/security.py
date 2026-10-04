@@ -61,6 +61,92 @@ def decode_token(token: str) -> dict[str, Any]:
         ) from exc
 
 
+def _request_app_token(request: Request | None) -> str:
+    """Application token (USHSPA_TOKEN) the *caller* sent to ushanr, if any."""
+    if request is None:
+        return ""
+    for name in ("x-ushspa-token", "ushspa-token"):
+        value = request.headers.get(name, "").strip().strip("\"'")
+        if value:
+            return value
+    return ""
+
+
+async def _ushauth_get(
+    path: str,
+    token: str,
+    settings: Settings,
+    caller_app_token: str = "",
+) -> httpx.Response | None:
+    """
+    GET ``path`` on ushauth, trying every configured base URL in order.
+
+    A URL is skipped (and the next tried) on connection errors, 5xx, redirects and
+    400 (Django DisallowedHost / SSL-redirect style misconfiguration). Any other
+    status (200, 401, 403, 404, ...) is a real answer from ushauth and is returned.
+
+    Application token: ushanr's configured USHSPA_TOKEN is tried first. If ushauth
+    answers 401 UNAUTHORIZED_APPLICATION (token missing/different in this
+    environment) the app token the browser/proxy sent to ushanr is tried instead -
+    it is the same pre-shared secret ushauth already accepted at login.
+
+    Returns None when no URL produced an answer.
+    """
+    configured = getattr(settings, "USHSPA_TOKEN", "").strip().strip("\"'")
+    app_tokens = [x for x in dict.fromkeys([configured, caller_app_token]) if x] or [""]
+    if not configured:
+        logger.warning("ushanr_ushspa_token_missing", message="USHSPA_TOKEN is empty; using caller's app token if present")
+
+    urls = getattr(settings, "ushauth_urls", None) or []
+    if not urls:
+        logger.error("ushanr_ushauth_not_configured", message="USHAUTH_BASE_URL is empty")
+        return None
+
+    for base in urls:
+        url = f"{base}{path}"
+        last: httpx.Response | None = None
+        failed = False
+        for app_token in app_tokens:
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "X-USHSPA-TOKEN": app_token,
+                "USHSPA-TOKEN": app_token,
+                "Accept": "application/json",
+                "X-Forwarded-Proto": "https",
+            }
+            try:
+                async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
+                    response = await client.get(url, headers=headers)
+            except Exception as exc:
+                logger.error("ushanr_ushauth_unreachable", url=url, error=repr(exc))
+                failed = True
+                break
+
+            sc = response.status_code
+            if sc >= 500 or sc == 400 or 300 <= sc < 400:
+                logger.error("ushanr_ushauth_bad_response", url=url, status=sc, body=response.text[:200])
+                failed = True
+                break
+
+            last = response
+            if sc == 401 and "UNAUTHORIZED_APPLICATION" in response.text:
+                logger.error(
+                    "ushanr_ushauth_app_token_rejected",
+                    url=url,
+                    message="ushauth rejected USHSPA_TOKEN; set ushanr USHSPA_TOKEN to ushauth's value",
+                )
+                continue  # try the next app token
+            break
+
+        if failed:
+            continue
+        if last is not None:
+            if last.status_code in (401, 403):
+                logger.warning("ushanr_ushauth_rejected", url=url, status=last.status_code, body=last.text[:200])
+            return last
+    return None
+
+
 def _extract_codenames(data: dict[str, Any]) -> list[str]:
     """Pull RBAC codenames out of an ushauth /employees/me/ response envelope."""
     profile: dict = data
@@ -80,7 +166,9 @@ def _extract_codenames(data: dict[str, Any]) -> list[str]:
     return raw
 
 
-async def _verify_with_ushauth(token: str, settings: Settings) -> dict[str, Any] | None:
+async def _verify_with_ushauth(
+    token: str, settings: Settings, caller_app_token: str = ""
+) -> dict[str, Any] | None:
     """
     Fallback verification: ask ushauth (the token issuer) whether the token is
     valid by calling its /me/ endpoint. Returns the token claims on success,
@@ -102,26 +190,10 @@ async def _verify_with_ushauth(token: str, settings: Settings) -> dict[str, Any]
     if cached and time.monotonic() - cached[1] < _VERIFIED_CACHE_TTL:
         return cached[0]
 
-    ushauth_url = getattr(settings, "USHAUTH_BASE_URL", "").rstrip("/")
-    if not ushauth_url:
-        return None
-
     is_employee = claims.get("user_type") in ("employee", "admin")
     path = "/api/v1/employees/me/" if is_employee else "/api/v1/customers/me/"
-    ushspa_token = getattr(settings, "USHSPA_TOKEN", "")
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "X-USHSPA-TOKEN": ushspa_token,
-        "USHSPA-TOKEN": ushspa_token,
-        "Accept": "application/json",
-        "X-Forwarded-Proto": "https",
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(f"{ushauth_url}{path}", headers=headers)
-    except Exception as exc:
-        logger.warning("ushanr_ushauth_token_verify_failed", error=str(exc))
+    response = await _ushauth_get(path, token, settings, caller_app_token)
+    if response is None:
         return None
 
     # 404 = valid token but no employee/customer profile; ushauth still
@@ -153,7 +225,9 @@ async def _verify_with_ushauth(token: str, settings: Settings) -> dict[str, Any]
     return claims
 
 
-async def authenticate_token(token: str, settings: Settings | None = None) -> dict[str, Any]:
+async def authenticate_token(
+    token: str, settings: Settings | None = None, request: Request | None = None
+) -> dict[str, Any]:
     """
     Verify a bearer token and return its claims.
 
@@ -163,7 +237,9 @@ async def authenticate_token(token: str, settings: Settings | None = None) -> di
     try:
         return decode_token(token)
     except HTTPException:
-        claims = await _verify_with_ushauth(token, settings or get_settings())
+        claims = await _verify_with_ushauth(
+            token, settings or get_settings(), _request_app_token(request)
+        )
         if claims is None:
             raise
         return claims
@@ -191,12 +267,15 @@ async def get_optional_user(
         return None
 
 
-async def _fetch_codenames_from_ushauth(token: str, settings: Settings) -> list[str] | None:
+async def _fetch_codenames_from_ushauth(
+    token: str, settings: Settings, caller_app_token: str = ""
+) -> list[str] | None:
     """
     Fetch RBAC permission codenames for the bearer from ushauth's
     /api/v1/employees/me/ endpoint.
 
-    Returns None if the service is unavailable or the user has no employee profile.
+    Returns None if the user has no employee profile (or ushauth sent an unusable reply).
+    Raises HTTP 503 if ushauth cannot be reached on any configured URL.
     Returns ["*"] for superusers.
     """
     import time
@@ -209,35 +288,39 @@ async def _fetch_codenames_from_ushauth(token: str, settings: Settings) -> list[
         if time.monotonic() - ts < _PERM_CACHE_TTL:
             return codenames
 
-    ushauth_url = getattr(settings, "USHAUTH_BASE_URL", "").rstrip("/")
-    ushspa_token = getattr(settings, "USHSPA_TOKEN", "")
+    response = await _ushauth_get("/api/v1/employees/me/", token, settings, caller_app_token)
 
-    if not ushauth_url:
-        logger.warning("USHAUTH_BASE_URL not configured; permission check skipped")
+    if response is None:
+        # Could not get ANY answer from ushauth: this is an infrastructure/config
+        # problem, not a permission problem — surface it as 503, not 403.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "AUTH_SERVICE_UNAVAILABLE",
+                "message": "Unable to verify permissions with the auth service.",
+            },
+        )
+    if response.status_code == 401 and "UNAUTHORIZED_APPLICATION" in response.text:
+        # ushauth rejected the application token (USHSPA_TOKEN) - a configuration
+        # problem, not a permission problem.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "AUTH_SERVICE_MISCONFIGURED",
+                "message": "ushauth rejected ushanr's application token (USHSPA_TOKEN).",
+            },
+        )
+    if response.status_code in (401, 403):
+        return []
+    if response.status_code == 404:
+        return None  # Valid token but no employee profile
+    if response.status_code != 200:
+        logger.error("ushanr_ushauth_unexpected_status", status=response.status_code, body=response.text[:200])
         return None
-
-    url = f"{ushauth_url}/api/v1/employees/me/"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "X-USHSPA-TOKEN": ushspa_token,
-        "USHSPA-TOKEN": ushspa_token,
-        "Accept": "application/json",
-        "X-Forwarded-Proto": "https",
-    }
-
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(url, headers=headers)
-
-        if response.status_code in (401, 403):
-            return []
-        if response.status_code == 404:
-            return None  # Not an employee
-        response.raise_for_status()
         data = response.json()
-
     except Exception as exc:
-        logger.warning("ushanr_ushauth_permission_fetch_failed", error=str(exc))
+        logger.error("ushanr_ushauth_invalid_json", error=repr(exc))
         return None
 
     codenames = _extract_codenames(data)
@@ -261,6 +344,7 @@ def require_permission(codename: str):
     """
 
     async def _check(
+        request: Request,
         credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
         settings: Settings = Depends(get_settings),
     ) -> dict[str, Any]:
@@ -270,35 +354,45 @@ def require_permission(codename: str):
                 detail="Authentication required",
             )
 
-        claims = await authenticate_token(credentials.credentials, settings)
+        claims = await authenticate_token(credentials.credentials, settings, request)
 
         # Superuser bypass
         if claims.get("is_superuser"):
             return claims
 
         # Fetch permissions from ushauth
-        codenames = await _fetch_codenames_from_ushauth(credentials.credentials, settings)
+        codenames = await _fetch_codenames_from_ushauth(
+            credentials.credentials, settings, _request_app_token(request)
+        )
 
         if codenames is None:
-            # ushauth unavailable or user is not an employee
+            # Valid token, but ushauth has no employee profile for this user
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail={
                     "code": "PERMISSION_DENIED",
                     "message": f"Permission '{codename}' is required.",
                     "required": codename,
+                    "reason": "no_employee_profile",
                 },
             )
 
         if codenames == ["*"] or codename in codenames:
             return claims
 
+        logger.warning(
+            "ushanr_permission_denied",
+            required=codename,
+            user_id=claims.get("user_id") or claims.get("sub"),
+            granted_count=len(codenames),
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={
                 "code": "PERMISSION_DENIED",
                 "message": f"Permission '{codename}' is required.",
                 "required": codename,
+                "reason": "role_lacks_permission",
             },
         )
 

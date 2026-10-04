@@ -124,8 +124,25 @@ class Settings(BaseSettings):
     )
     USHSPA_TOKEN: str = Field(
         default="",
+        validation_alias=AliasChoices("USHSPA_TOKEN", "USH_TOKEN"),
         description="Shared application token for inter-service requests.",
     )
+    # Optional API-gateway fallback used when USHAUTH_BASE_URL is unreachable or
+    # misconfigured (same approach as ushbooknpay). Example:
+    #   API_GATEWAY_BASE_URL=https://api.ushspa.co   USHAUTH_BASE_PATH=/uauth
+    API_GATEWAY_BASE_URL: str = Field(default="")
+    USHAUTH_BASE_PATH: str = Field(default="/uauth")
+    @property
+    def ushauth_urls(self) -> list[str]:
+        """Candidate ushauth base URLs, in order of preference (deduplicated)."""
+        urls: list[str] = []
+        if self.USHAUTH_BASE_URL and self.USHAUTH_BASE_URL.strip():
+            urls.append(self.USHAUTH_BASE_URL.strip().rstrip("/"))
+        if self.API_GATEWAY_BASE_URL and self.API_GATEWAY_BASE_URL.strip():
+            path = "/" + self.USHAUTH_BASE_PATH.strip().strip("/") if self.USHAUTH_BASE_PATH.strip("/ ") else ""
+            urls.append(f"{self.API_GATEWAY_BASE_URL.strip().rstrip('/')}{path}")
+        return list(dict.fromkeys(urls))
+
     INTERNAL_API_KEY: str = Field(
         default="ushanr-internal-secret-change-in-prod",
         description="Shared secret for internal service-to-service endpoints (X-Internal-Key header).",
