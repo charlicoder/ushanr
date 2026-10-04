@@ -9,7 +9,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, PostgresDsn, field_validator
+from pydantic import AliasChoices, Field, PostgresDsn, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,6 +19,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore",
+        populate_by_name=True,
     )
 
     # ── App ───────────────────────────────────────────────────────────────
@@ -26,7 +27,15 @@ class Settings(BaseSettings):
     APP_VERSION: str = "1.0.0"
     APP_ENV: Literal["development", "staging", "production"] = "development"
     LOG_LEVEL: str = "INFO"
-    SECRET_KEY: str = "change-me-in-production-please"
+    # HS256 key used to verify JWTs issued by ushauth. It MUST equal ushauth's
+    # SIMPLE_JWT["SIGNING_KEY"] (JWT_SECRET_KEY, falling back to DJANGO_SECRET_KEY).
+    # Read from the same env var names as ushauth so both services can share one
+    # value. Precedence: JWT_SECRET_KEY > SECRET_KEY > DJANGO_SECRET_KEY.
+    # The default matches ushauth's default so local dev works out of the box.
+    SECRET_KEY: str = Field(
+        default="change-me-in-production",
+        validation_alias=AliasChoices("JWT_SECRET_KEY", "SECRET_KEY", "DJANGO_SECRET_KEY"),
+    )
 
     # ── Server ────────────────────────────────────────────────────────────
     HOST: str = "0.0.0.0"
