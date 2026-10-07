@@ -93,6 +93,7 @@ class JournalEntryData:
     currency_code: str = "KWD"
     source_document_type: str | None = None
     source_document_id: UUID | None = None
+    invoice_number: str | None = None
     posted_by: str | None = None
 
 
@@ -280,6 +281,15 @@ class DoubleEntryEngine:
                     entry_date=accounting_date,
                 )
 
+        # Resolve invoice_number: explicit value, else from the linked invoice
+        entry_invoice_number = data.invoice_number
+        if not entry_invoice_number and data.source_document_type == "invoice" and data.source_document_id:
+            from app.models.invoice import Invoice
+            _inv_res = await session.execute(
+                select(Invoice.name).where(Invoice.id == data.source_document_id)
+            )
+            entry_invoice_number = _inv_res.scalar_one_or_none()
+
         entry = JournalEntry(
             company_id=data.company_id,
             journal_id=data.journal_id,
@@ -294,6 +304,7 @@ class DoubleEntryEngine:
             currency_code=data.currency_code,
             source_document_type=data.source_document_type,
             source_document_id=data.source_document_id,
+            invoice_number=entry_invoice_number,
         )
         session.add(entry)
         await session.flush()  # Get entry.id without committing
@@ -313,6 +324,7 @@ class DoubleEntryEngine:
                 currency_rate=float(item_data.currency_rate) if item_data.currency_rate else None,
                 due_date=item_data.due_date,
                 reference=item_data.reference,
+                invoice_number=entry_invoice_number,
                 date=data.entry_date,
                 sequence=item_data.sequence or (i + 1) * 10,
             )
@@ -396,6 +408,9 @@ class DoubleEntryEngine:
                         inv.reference = inv.source_document_ref
                         session.add(inv)
                     entry.name = inv.name
+                    entry.invoice_number = inv.name
+                    for _it in entry_items:
+                        _it.invoice_number = inv.name
                     entry.reference = entry.reference or inv.reference or inv.source_document_ref
                     entry.narration = f"{inv.invoice_type.upper()}: {inv.name}"
 
@@ -488,6 +503,7 @@ class DoubleEntryEngine:
             currency_code=entry.currency_code,
             source_document_type=entry.source_document_type,
             source_document_id=entry.source_document_id,
+            invoice_number=entry.invoice_number,
             posted_by=posted_by,
         )
 

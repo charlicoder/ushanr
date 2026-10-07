@@ -20,6 +20,7 @@ from fastapi import Query
 from pydantic import BaseModel, ConfigDict, Field
 
 
+
 # ---------------------------------------------------------------------------
 # Enumerations (must mirror the model-layer enums exactly)
 # ---------------------------------------------------------------------------
@@ -120,6 +121,8 @@ class InvoiceLineResponse(BaseModel):
     updated_at: datetime
 
 
+
+
 # ---------------------------------------------------------------------------
 # Invoice schemas
 # ---------------------------------------------------------------------------
@@ -217,6 +220,8 @@ class InvoiceResponse(BaseModel):
     )
     created_at: datetime
     updated_at: datetime
+
+
 
 
 # ---------------------------------------------------------------------------

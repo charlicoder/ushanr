@@ -47,6 +47,7 @@ def _item_to_dict(item: JournalItem) -> dict:
         "currency_rate": float(item.currency_rate) if item.currency_rate else None,
         "reconciled": item.reconciled,
         "sequence": item.sequence,
+        "invoice_number": item.invoice_number,
     }
 
 
@@ -57,6 +58,7 @@ def _entry_to_dict(entry: JournalEntry) -> dict:
         "journal_id": str(entry.journal_id),
         "name": entry.name,
         "reference": entry.reference,
+        "invoice_number": entry.invoice_number,
         "narration": entry.narration,
         "entry_date": entry.entry_date.isoformat() if entry.entry_date else None,
         "accounting_date": entry.accounting_date.isoformat() if entry.accounting_date else None,
@@ -105,6 +107,7 @@ async def list_journal_entries(
     if search:
         q = q.where(
             (JournalEntry.name.ilike(f"%{search}%")) |
+            (JournalEntry.invoice_number.ilike(f"%{search}%")) |
             (JournalEntry.reference.ilike(f"%{search}%"))
         )
 

@@ -21,6 +21,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, select
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -63,6 +64,20 @@ def _line_to_dict(line: InvoiceLine) -> dict:
     }
 
 
+# Invoice status semantics:
+#   posted    = not linked with any payment
+#   partial   = linked with payment(s), partially paid
+#   paid      = linked with payment(s), fully paid
+_STATE_LABELS = {
+    "draft": "Draft",
+    "confirmed": "Confirmed",
+    "posted": "Posted",
+    "partial": "Partially Paid",
+    "paid": "Paid",
+    "cancelled": "Cancelled",
+}
+
+
 def _invoice_to_dict(inv: Invoice) -> dict:
     return {
         "id": str(inv.id),
@@ -70,7 +85,9 @@ def _invoice_to_dict(inv: Invoice) -> dict:
         "name": inv.name,
         "reference": inv.reference or inv.source_document_ref,
         "invoice_type": inv.invoice_type,
+        "invoice_number": inv.name,
         "state": inv.state,
+        "status_label": _STATE_LABELS.get(inv.state, str(inv.state).title()),
         "partner_id": str(inv.partner_id),
         "journal_id": str(inv.journal_id),
         "journal_entry_id": str(inv.journal_entry_id) if inv.journal_entry_id else None,
@@ -193,6 +210,9 @@ async def create_invoice(
 
     inv_type = payload.get("invoice_type", InvoiceType.INVOICE.value)
 
+    # Invoice date is always the creation date (never taken from the payload/source doc)
+    today = date.today()
+
     # Generate sequential name if not provided
     svc = InvoiceService(db)
     inv_name = payload.get("name")
@@ -200,7 +220,7 @@ async def create_invoice(
         inv_name = await svc._generate_invoice_name(
             UUID(str(payload["company_id"])),
             inv_type,
-            date.fromisoformat(payload["invoice_date"]),
+            today,
         )
     ref = payload.get("reference") or payload.get("source_document_ref")
 
@@ -211,9 +231,9 @@ async def create_invoice(
         partner_id=UUID(str(payload["partner_id"])),
         invoice_type=inv_type,
         state=InvoiceState.DRAFT.value,
-        invoice_date=date.fromisoformat(payload["invoice_date"]),
+        invoice_date=today,
         due_date=date.fromisoformat(payload["due_date"]) if payload.get("due_date") else None,
-        accounting_date=date.fromisoformat(payload["accounting_date"]) if payload.get("accounting_date") else None,
+        accounting_date=date.fromisoformat(payload["accounting_date"]) if payload.get("accounting_date") else today,
         payment_terms=payload.get("payment_terms", "immediate"),
         payment_terms_days=payload.get("payment_terms_days", 0),
         currency_code=payload.get("currency_code", "KWD"),

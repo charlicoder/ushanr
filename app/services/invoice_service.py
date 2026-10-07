@@ -322,8 +322,10 @@ class InvoiceService:
         invoice_date: date | None = None,
     ) -> str:
         """
-        Generate the next sequential invoice number for the company and invoice type.
-        E.g. INV/2026/00011, RINV/2026/00001, BILL/2026/00001.
+        Generate the next sequential invoice number for the company and type.
+
+        Format: PREFIX/YYYY/MM/NNNNN (5-digit sequence, restarting each month).
+        E.g. INV/2026/10/00001, RINV/2026/10/00001, BILL/2026/10/00001.
         """
         prefix_map = {
             InvoiceType.INVOICE.value: "INV",
@@ -332,56 +334,21 @@ class InvoiceService:
             InvoiceType.VENDOR_CREDIT.value: "RBILL",
         }
         prefix = prefix_map.get(invoice_type, "INV")
-        year = invoice_date.year if invoice_date else date.today().year
+        ref_date = invoice_date or date.today()
+        date_prefix = f"{prefix}/{ref_date.strftime('%Y/%m')}/"
 
-        # Find highest existing number matching prefix/year in Invoice table
-        pattern = f"{prefix}/{year}/%"
-        existing_stmt = select(Invoice.name).where(
-            Invoice.company_id == company_id,
-            Invoice.name.like(pattern),
-        )
+        # Highest existing sequence for this prefix/year/month (names are globally unique)
+        existing_stmt = select(Invoice.name).where(Invoice.name.like(f"{date_prefix}%"))
         existing_names = (await self._session.execute(existing_stmt)).scalars().all()
         highest_num = 0
         for n in existing_names:
             if not n:
                 continue
-            parts = n.split("/")
-            if parts and parts[-1].isdigit():
-                val = int(parts[-1])
-                if val > highest_num:
-                    highest_num = val
+            last = n.rsplit("/", 1)[-1]
+            if last.isdigit():
+                highest_num = max(highest_num, int(last))
 
-        # Query DocumentSequence if exists
-        seq_stmt = select(DocumentSequence).where(
-            DocumentSequence.company_id == company_id,
-            DocumentSequence.prefix == prefix,
-            DocumentSequence.is_active == True,
-        )
-        seq_result = await self._session.execute(seq_stmt)
-        seq = seq_result.scalar_one_or_none()
-
-        padding = 5
-        if seq is not None:
-            padding = seq.padding or 5
-            next_num = max(seq.next_number, highest_num + 1)
-            seq.next_number = next_num + (seq.step or 1)
-            self._session.add(seq)
-        else:
-            next_num = highest_num + 1
-            seq = DocumentSequence(
-                company_id=company_id,
-                name=f"{prefix} Sequence",
-                code=f"{prefix.lower()}_sequence",
-                prefix=prefix,
-                next_number=next_num + 1,
-                step=1,
-                padding=padding,
-                use_date_range=True,
-                is_active=True,
-            )
-            self._session.add(seq)
-
-        return f"{prefix}/{year}/{str(next_num).zfill(padding)}"
+        return f"{date_prefix}{highest_num + 1:05d}"
 
     # ── CRUD ──────────────────────────────────────────────────────────────────
 
@@ -395,6 +362,12 @@ class InvoiceService:
         Raises:
             ValidationError: Bad input (invalid type, no lines, amounts ≤ 0).
         """
+        # Invoice date is always the date the invoice record is created,
+        # never the source document (booking/order) date.
+        data.invoice_date = date.today()
+        if data.accounting_date is None:
+            data.accounting_date = data.invoice_date
+
         amount_untaxed, amount_tax, amount_total = self._compute_totals(data.lines)
 
         if amount_total <= ZERO:

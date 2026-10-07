@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     APP_VERSION: str = "1.0.0"
     APP_ENV: Literal["development", "staging", "production"] = "development"
     LOG_LEVEL: str = "INFO"
+    TIMEZONE: str = "Asia/Kuwait"
     # HS256 key used to verify JWTs issued by ushauth. It MUST equal ushauth's
     # SIMPLE_JWT["SIGNING_KEY"] (JWT_SECRET_KEY, falling back to DJANGO_SECRET_KEY).
     # Read from the same env var names as ushauth so both services can share one

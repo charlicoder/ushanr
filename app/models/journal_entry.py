@@ -96,6 +96,9 @@ class JournalEntry(UUIDPrimaryKeyMixin, CompanyMixin, TimestampMixin, Base):
     source_document_type: Mapped[str | None] = mapped_column(String(50), nullable=True)
     source_document_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
 
+    # Invoice number (e.g. INV/2026/10/00001) of the invoice this entry belongs to
+    invoice_number: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+
     # Relationships
     items: Mapped[list[JournalItem]] = relationship(
         "JournalItem", back_populates="entry", cascade="all, delete-orphan", lazy="selectin"
@@ -164,6 +167,7 @@ class JournalItem(UUIDPrimaryKeyMixin, CompanyMixin, TimestampMixin, Base):
     name: Mapped[str | None] = mapped_column(String(500), nullable=True)
     reference: Mapped[str | None] = mapped_column(String(255), nullable=True)
     sequence: Mapped[int] = mapped_column(default=10, nullable=False)
+    invoice_number: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
 
     # Dates
     date: Mapped[date | None] = mapped_column(Date, nullable=True, index=True)

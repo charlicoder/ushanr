@@ -7,10 +7,18 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import DateTime, String, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
+
+_KUWAIT_TZ = ZoneInfo("Asia/Kuwait")
+
+
+def _now_kuwait() -> datetime:
+    """Asia/Kuwait wall-clock time labelled UTC (platform-wide convention, same as appointment_start)."""
+    return datetime.now(_KUWAIT_TZ).replace(tzinfo=timezone.utc)
 
 
 class UUIDPrimaryKeyMixin:
@@ -24,16 +32,18 @@ class UUIDPrimaryKeyMixin:
 
 
 class TimestampMixin:
-    """Created/updated timestamps, auto-managed."""
+    """Created/updated timestamps, auto-managed in Asia/Kuwait timezone."""
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
+        default=_now_kuwait,
         nullable=False,
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
-        onupdate=func.now(),
+        default=_now_kuwait,
+        onupdate=_now_kuwait,
         nullable=False,
     )
 

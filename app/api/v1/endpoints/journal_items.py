@@ -63,6 +63,7 @@ async def list_journal_items(
             JournalItem.reconciled,
             JournalItem.currency_code,
             JournalItem.sequence,
+            JournalItem.invoice_number,
         )
         .join(JournalEntry, JournalItem.entry_id == JournalEntry.id)
         .join(Account, JournalItem.account_id == Account.id)
@@ -104,6 +105,7 @@ async def list_journal_items(
         q = q.where(
             (JournalEntry.name.ilike(search_term))
             | (JournalItem.name.ilike(search_term))
+            | (JournalItem.invoice_number.ilike(search_term))
             | (Account.code.ilike(search_term))
             | (Account.name.ilike(search_term))
             | (Partner.name.ilike(search_term))
@@ -144,6 +146,7 @@ async def list_journal_items(
             "reconciled": r.reconciled,
             "currency_code": r.currency_code,
             "sequence": r.sequence,
+            "invoice_number": r.invoice_number,
         }
         for r in rows
     ]

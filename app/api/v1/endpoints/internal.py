@@ -24,7 +24,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -220,6 +220,39 @@ async def ensure_partner(
         created=created,
     )
     return EnsurePartnerResponse(partner_id=partner.id, created=created)
+
+
+@router.get(
+    "/invoices/by-source/",
+    response_model=InvoiceCreatedResponse,
+    summary="Get existing invoice for a source document",
+)
+async def get_invoice_by_source(
+    source_document_type: str = Query(...),
+    source_document_id: str = Query(...),
+    _: None = InternalAuth,
+    session: AsyncSession = Depends(get_db),
+) -> InvoiceCreatedResponse:
+    """Fetch invoice for a source document by its source_document_type and source_document_id."""
+    result = await session.execute(
+        select(Invoice).where(
+            Invoice.source_document_type == source_document_type,
+            Invoice.source_document_id == source_document_id,
+            Invoice.is_deleted.is_(False),
+        )
+    )
+    existing_invoice = result.scalar_one_or_none()
+    if existing_invoice is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No invoice found for {source_document_type} {source_document_id}",
+        )
+    return InvoiceCreatedResponse(
+        invoice_id=existing_invoice.id,
+        invoice_name=existing_invoice.name,
+        state=existing_invoice.state,
+        amount_total=Decimal(str(existing_invoice.amount_total)),
+    )
 
 
 @router.post(
