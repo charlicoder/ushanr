@@ -53,6 +53,7 @@ from app.models.invoice import (
     InvoiceType,
     PaymentTerms,
 )
+from app.models.payment import Payment, PaymentAllocation, PaymentState, PaymentType
 from app.models.journal_entry import EntryState, JournalEntry
 from app.models.journal import Journal
 from app.models.sequence import DocumentSequence
@@ -133,6 +134,13 @@ class CreateInvoiceData:
     source_document_ref: str | None = None
     accounting_date: date | None = None
 
+    # Payment association fields
+    is_paid: bool = False
+    payment_status: str | None = None
+    amount_paid: Decimal | None = None
+    payment_id: UUID | str | None = None
+    payment_reference: str | None = None
+
     def __post_init__(self) -> None:
         valid_types = {t.value for t in InvoiceType}
         if self.invoice_type not in valid_types:
@@ -142,6 +150,8 @@ class CreateInvoiceData:
             )
         if not self.lines:
             raise ValidationError("Invoice must have at least one line.")
+        if self.amount_paid is not None:
+            self.amount_paid = Decimal(str(self.amount_paid))
 
 
 @dataclass
@@ -388,6 +398,54 @@ class InvoiceService:
                 invoice_date=data.invoice_date,
             )
 
+        # Determine payment association and initial payment/state
+        is_associated_payment = (
+            bool(data.is_paid)
+            or (bool(data.payment_status) and str(data.payment_status).strip().lower() in ("paid", "success", "completed", "successful", "rewarded"))
+            or bool(data.payment_id)
+            or (data.amount_paid is not None and data.amount_paid > ZERO)
+        )
+
+        matching_payment = None
+        if not is_associated_payment and (data.source_document_id or data.source_document_ref or data.reference):
+            cand_refs = [str(r) for r in [data.source_document_ref, data.source_document_id, data.reference] if r]
+            stmt_pmt = select(Payment).where(
+                Payment.company_id == data.company_id,
+                Payment.payment_type == PaymentType.INBOUND.value,
+                Payment.state.in_([PaymentState.POSTED.value, PaymentState.RECONCILED.value, "posted", "reconciled"]),
+                or_(
+                    Payment.reference.in_(cand_refs),
+                    Payment.payment_id_external.in_(cand_refs),
+                    Payment.reference_id.in_(cand_refs),
+                    Payment.transaction_id.in_(cand_refs),
+                ),
+            ).order_by(Payment.created_at.desc())
+            pmt_res = await self._session.execute(stmt_pmt)
+            matching_payment = pmt_res.scalars().first()
+            if matching_payment:
+                is_associated_payment = True
+
+        init_paid = ZERO
+        init_residual = amount_total
+        init_state = InvoiceState.DRAFT.value
+
+        if is_associated_payment:
+            if data.amount_paid is not None:
+                init_paid = data.amount_paid
+            elif matching_payment is not None:
+                init_paid = min(amount_total, Decimal(str(matching_payment.amount)))
+            elif (
+                data.is_paid
+                or (data.payment_status and str(data.payment_status).strip().lower() in ("paid", "success", "completed", "successful", "rewarded"))
+            ):
+                init_paid = amount_total
+
+            init_residual = max(ZERO, amount_total - init_paid)
+            if init_residual == ZERO and init_paid > ZERO:
+                init_state = InvoiceState.PAID.value
+            elif init_paid > ZERO:
+                init_state = InvoiceState.PARTIAL.value
+
         invoice = Invoice(
             name=invoice_name,
             company_id=data.company_id,
@@ -402,12 +460,12 @@ class InvoiceService:
             currency_code=data.currency_code,
             reference=data.reference or data.source_document_ref,
             notes=data.notes,
-            state=InvoiceState.DRAFT.value,
+            state=init_state,
             amount_untaxed=float(amount_untaxed),
             amount_tax=float(amount_tax),
             amount_total=float(amount_total),
-            amount_paid=0.0,
-            amount_residual=float(amount_total),
+            amount_paid=float(init_paid),
+            amount_residual=float(init_residual),
             source_document_type=data.source_document_type,
             source_document_id=data.source_document_id,
             source_document_ref=data.source_document_ref,
@@ -415,6 +473,22 @@ class InvoiceService:
         )
         self._session.add(invoice)
         await self._session.flush()  # populate invoice.id
+
+        # If matching payment found, allocate to invoice
+        if matching_payment and init_paid > ZERO:
+            alloc = PaymentAllocation(
+                payment_id=matching_payment.id,
+                invoice_id=invoice.id,
+                amount=float(init_paid),
+                currency_code=invoice.currency_code,
+                allocation_date=data.invoice_date,
+            )
+            self._session.add(alloc)
+            new_pmt_residual = max(ZERO, Decimal(str(matching_payment.amount_residual)) - init_paid)
+            matching_payment.amount_residual = float(new_pmt_residual)
+            if new_pmt_residual == ZERO:
+                matching_payment.state = PaymentState.RECONCILED.value
+            self._session.add(matching_payment)
 
         # Create invoice lines
         for i, line_data in enumerate(data.lines):
@@ -533,11 +607,16 @@ class InvoiceService:
         """
         invoice = await self._fetch_invoice(invoice_id, company_id)
 
-        allowed_states = {InvoiceState.DRAFT.value, InvoiceState.CONFIRMED.value}
+        allowed_states = {
+            InvoiceState.DRAFT.value,
+            InvoiceState.CONFIRMED.value,
+            InvoiceState.PAID.value,
+            InvoiceState.PARTIAL.value,
+        }
         if invoice.state not in allowed_states:
             raise ForbiddenOperationError(
                 f"Invoice {invoice.name or invoice_id} is in state '{invoice.state}'. "
-                "Only DRAFT or CONFIRMED invoices can be posted.",
+                "Only DRAFT, CONFIRMED, or PAID/PARTIAL invoices can be posted.",
                 detail={"state": invoice.state},
             )
 
@@ -760,7 +839,12 @@ class InvoiceService:
 
         # Link the entry back to the invoice
         invoice.journal_entry_id = journal_entry.id
-        invoice.state = InvoiceState.POSTED.value
+        if Decimal(str(invoice.amount_residual)) == ZERO and Decimal(str(invoice.amount_paid)) > ZERO:
+            invoice.state = InvoiceState.PAID.value
+        elif Decimal(str(invoice.amount_paid)) > ZERO and Decimal(str(invoice.amount_residual)) > ZERO:
+            invoice.state = InvoiceState.PARTIAL.value
+        else:
+            invoice.state = InvoiceState.POSTED.value
         self._session.add(invoice)
         await self._session.flush()
 
@@ -770,6 +854,67 @@ class InvoiceService:
             journal_entry_id=str(journal_entry.id),
             posted_by=posted_by,
         )
+        return invoice
+
+    async def mark_invoice_paid(
+        self,
+        invoice_id: UUID,
+        amount_paid: Decimal | None = None,
+        payment_id: UUID | str | None = None,
+        company_id: UUID | None = None,
+    ) -> Invoice:
+        """Mark an invoice as paid (or partially paid) and allocate to payment if provided."""
+        invoice = await self._fetch_invoice(invoice_id, company_id)
+        tot = Decimal(str(invoice.amount_total))
+        paid = amount_paid if amount_paid is not None else tot
+        invoice.amount_paid = float(paid)
+        residual = max(ZERO, tot - paid)
+        invoice.amount_residual = float(residual)
+        if residual == ZERO:
+            invoice.state = InvoiceState.PAID.value
+        elif paid > ZERO:
+            invoice.state = InvoiceState.PARTIAL.value
+
+        if payment_id:
+            safe_uid = None
+            if isinstance(payment_id, UUID):
+                safe_uid = payment_id
+            elif isinstance(payment_id, str):
+                try:
+                    safe_uid = UUID(payment_id.strip())
+                except (ValueError, TypeError):
+                    safe_uid = None
+
+            conds = [
+                Payment.payment_id_external == str(payment_id),
+                Payment.reference == str(payment_id),
+                Payment.reference_id == str(payment_id),
+                Payment.transaction_id == str(payment_id),
+            ]
+            if safe_uid:
+                conds.append(Payment.id == safe_uid)
+
+            pmt_res = await self._session.execute(
+                select(Payment).where(or_(*conds))
+            )
+            pmt = pmt_res.scalars().first()
+            if pmt:
+                alloc = PaymentAllocation(
+                    payment_id=pmt.id,
+                    invoice_id=invoice.id,
+                    amount=float(paid),
+                    currency_code=invoice.currency_code,
+                    allocation_date=date.today(),
+                )
+                self._session.add(alloc)
+                new_pmt_residual = max(ZERO, Decimal(str(pmt.amount_residual)) - paid)
+                pmt.amount_residual = float(new_pmt_residual)
+                if new_pmt_residual == ZERO:
+                    pmt.state = PaymentState.RECONCILED.value
+                self._session.add(pmt)
+
+        self._session.add(invoice)
+        await self._session.flush()
         return invoice
 
     async def cancel_invoice(

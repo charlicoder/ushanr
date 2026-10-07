@@ -184,6 +184,25 @@ class CreateInvoiceRequest(BaseModel):
         max_length=128,
         description="ID of the originating source document for traceability",
     )
+    is_paid: bool | None = Field(
+        default=None,
+        description="Whether the invoice is already paid",
+    )
+    payment_status: str | None = Field(
+        default=None,
+        max_length=64,
+        description="Payment status e.g. 'paid', 'success'",
+    )
+    amount_paid: Decimal | None = Field(
+        default=None,
+        ge=Decimal("0"),
+        description="Amount already paid",
+    )
+    payment_id: str | None = Field(
+        default=None,
+        max_length=128,
+        description="Payment UUID / external payment reference",
+    )
 
 
 class InvoiceResponse(BaseModel):

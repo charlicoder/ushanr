@@ -284,7 +284,29 @@ async def create_invoice(
     invoice.amount_untaxed = float(total_untaxed)
     invoice.amount_tax = float(total_tax)
     invoice.amount_total = float(amount_total)
-    invoice.amount_residual = float(amount_total)
+
+    is_paid = payload.get("is_paid")
+    p_status = str(payload.get("payment_status") or "").strip().lower()
+    amt_paid = payload.get("amount_paid")
+    is_associated_payment = (
+        is_paid is True
+        or p_status in ("paid", "success", "completed", "successful", "rewarded")
+        or bool(payload.get("payment_id"))
+        or (amt_paid is not None and Decimal(str(amt_paid)) > ZERO)
+    )
+
+    if is_associated_payment:
+        paid_val = Decimal(str(amt_paid)) if amt_paid is not None else amount_total
+        res_val = max(ZERO, amount_total - paid_val)
+        invoice.amount_paid = float(paid_val)
+        invoice.amount_residual = float(res_val)
+        if res_val == ZERO and paid_val > ZERO:
+            invoice.state = InvoiceState.PAID.value
+        elif paid_val > ZERO:
+            invoice.state = InvoiceState.PARTIAL.value
+    else:
+        invoice.amount_paid = 0.0
+        invoice.amount_residual = float(amount_total)
 
     await db.flush()
 

@@ -32,7 +32,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.logging import get_logger
+from app.models.account import Account, AccountType
+from app.models.company import Company
 from app.models.invoice import Invoice, InvoiceState, InvoiceType
+from app.models.journal import Journal, JournalType
 from app.models.partner import Partner, PartnerType
 from app.services.invoice_service import (
     CreateInvoiceData,
@@ -119,6 +122,11 @@ class CreateInvoiceFromSourceRequest(BaseModel):
     currency_code: str = Field(default="KWD")
     notes: str | None = None
     lines: list[InvoiceLineIn]
+    is_paid: bool | None = Field(default=None, description="Whether the invoice is already paid")
+    payment_status: str | None = Field(default=None, description="Payment status e.g. paid, success")
+    amount_paid: Decimal | None = Field(default=None, description="Amount already paid")
+    payment_id: str | None = Field(default=None, description="Payment UUID / external payment reference")
+    payment_reference: str | None = Field(default=None, description="Payment reference")
 
 
 class InvoiceCreatedResponse(BaseModel):
@@ -141,6 +149,19 @@ class CreditNoteRequest(BaseModel):
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
+def _safe_uuid(val: Any) -> UUID | None:
+    """Safely parse UUID without raising ValueError on arbitrary strings."""
+    if not val:
+        return None
+    s = str(val).strip()
+    if not s or s.lower() in ("none", "null", "undefined"):
+        return None
+    try:
+        return UUID(s)
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
 async def _ensure_partner(
     session: AsyncSession,
     company_id: UUID,
@@ -154,6 +175,18 @@ async def _ensure_partner(
     Get or create a Partner by external_id within a company.
     Returns (partner, created_bool).
     """
+    # Ensure company exists, fallback to first active company if needed
+    comp_exists = await session.execute(
+        select(Company).where(Company.id == company_id, Company.is_active.is_(True))
+    )
+    if comp_exists.scalar_one_or_none() is None:
+        first_comp = await session.execute(
+            select(Company).where(Company.is_active.is_(True)).order_by(Company.created_at.asc()).limit(1)
+        )
+        comp = first_comp.scalar_one_or_none()
+        if comp is not None:
+            company_id = comp.id
+
     result = await session.execute(
         select(Partner).where(
             Partner.company_id == company_id,
@@ -284,6 +317,23 @@ async def create_invoice_from_source(
     )
     existing_invoice = existing.scalar_one_or_none()
     if existing_invoice is not None:
+        # If existing invoice exists and caller indicates payment has completed, update to PAID
+        is_paid_signal = (
+            body.is_paid is True
+            or (body.payment_status and str(body.payment_status).strip().lower() in ("paid", "success", "completed", "successful", "rewarded"))
+            or (body.amount_paid is not None and body.amount_paid >= Decimal(str(existing_invoice.amount_total)))
+        )
+        if is_paid_signal and existing_invoice.state != InvoiceState.PAID.value:
+            paid_val = float(body.amount_paid if body.amount_paid is not None else existing_invoice.amount_total)
+            existing_invoice.amount_paid = paid_val
+            existing_invoice.amount_residual = max(0.0, float(Decimal(str(existing_invoice.amount_total)) - Decimal(str(paid_val))))
+            if existing_invoice.amount_residual == 0.0:
+                existing_invoice.state = InvoiceState.PAID.value
+            elif existing_invoice.amount_paid > 0.0:
+                existing_invoice.state = InvoiceState.PARTIAL.value
+            session.add(existing_invoice)
+            await session.commit()
+
         logger.info(
             "internal_invoice_already_exists",
             invoice_id=str(existing_invoice.id),
@@ -297,25 +347,86 @@ async def create_invoice_from_source(
             amount_total=Decimal(str(existing_invoice.amount_total)),
         )
 
-    lines = [
-        InvoiceLineData(
-            account_id=ln.account_id,
-            name=ln.name,
-            quantity=ln.quantity,
-            unit_price=ln.unit_price,
-            discount=ln.discount,
-            tax_id=ln.tax_id,
-            analytic_account_id=ln.analytic_account_id,
-            product_id=ln.product_id,
+    # Ensure company exists, fallback to first active company if needed
+    effective_company_id = body.company_id
+    comp_exists = await session.execute(
+        select(Company).where(Company.id == effective_company_id, Company.is_active.is_(True))
+    )
+    if comp_exists.scalar_one_or_none() is None:
+        first_comp = await session.execute(
+            select(Company).where(Company.is_active.is_(True)).order_by(Company.created_at.asc()).limit(1)
         )
-        for ln in body.lines
-    ]
+        comp = first_comp.scalar_one_or_none()
+        if comp is not None:
+            effective_company_id = comp.id
+
+    # Ensure journal exists, fallback to first active sale journal if needed
+    effective_journal_id = body.journal_id
+    jour_exists = await session.execute(
+        select(Journal).where(Journal.id == effective_journal_id, Journal.is_active.is_(True))
+    )
+    if jour_exists.scalar_one_or_none() is None:
+        first_jour = await session.execute(
+            select(Journal).where(
+                Journal.company_id == effective_company_id,
+                Journal.journal_type == JournalType.SALE.value,
+                Journal.is_active.is_(True),
+            ).order_by(Journal.created_at.asc()).limit(1)
+        )
+        jour = first_jour.scalar_one_or_none()
+        if jour is not None:
+            effective_journal_id = jour.id
+
+    # Ensure line accounts exist, fallback to first active revenue account if needed
+    lines = []
+    default_account_id = None
+    for ln in body.lines:
+        target_acct_id = ln.account_id
+        acct_exists = await session.execute(
+            select(Account).where(Account.id == target_acct_id, Account.is_active.is_(True))
+        )
+        if acct_exists.scalar_one_or_none() is None:
+            if default_account_id is None:
+                first_acct = await session.execute(
+                    select(Account).where(
+                        Account.company_id == effective_company_id,
+                        Account.account_type == AccountType.REVENUE.value,
+                        Account.is_active.is_(True),
+                    ).order_by(Account.created_at.asc()).limit(1)
+                )
+                def_acct_obj = first_acct.scalar_one_or_none()
+                if def_acct_obj:
+                    default_account_id = def_acct_obj.id
+            if default_account_id:
+                target_acct_id = default_account_id
+
+        lines.append(
+            InvoiceLineData(
+                account_id=target_acct_id,
+                name=ln.name,
+                quantity=ln.quantity,
+                unit_price=ln.unit_price,
+                discount=ln.discount,
+                tax_id=ln.tax_id,
+                analytic_account_id=ln.analytic_account_id,
+                product_id=ln.product_id,
+            )
+        )
 
     svc = InvoiceService(session)
+    parsed_pmt_id = _safe_uuid(body.payment_id)
+    raw_pmt_str = (
+        str(body.payment_id).strip()
+        if body.payment_id and str(body.payment_id).strip().lower() not in ("none", "null", "undefined")
+        else None
+    )
+    effective_payment_id = parsed_pmt_id or raw_pmt_str
+    effective_payment_ref = body.payment_reference or (raw_pmt_str if not parsed_pmt_id else None)
+
     data = CreateInvoiceData(
-        company_id=body.company_id,
+        company_id=effective_company_id,
         partner_id=body.partner_id,
-        journal_id=body.journal_id,
+        journal_id=effective_journal_id,
         invoice_type=InvoiceType.INVOICE.value,
         invoice_date=body.invoice_date,
         lines=lines,
@@ -325,6 +436,11 @@ async def create_invoice_from_source(
         source_document_type=body.source_document_type,
         source_document_id=body.source_document_id,
         source_document_ref=body.source_document_ref,
+        is_paid=body.is_paid if body.is_paid is not None else False,
+        payment_status=body.payment_status,
+        amount_paid=body.amount_paid,
+        payment_id=effective_payment_id,
+        payment_reference=effective_payment_ref,
     )
     invoice = await svc.create_invoice(data)
     invoice = await svc.post_invoice(invoice.id, posted_by="ushnotice")
@@ -343,6 +459,58 @@ async def create_invoice_from_source(
         invoice_name=invoice.name,
         state=invoice.state,
         amount_total=Decimal(str(invoice.amount_total)),
+    )
+
+
+class MarkInvoicePaidRequest(BaseModel):
+    invoice_id: UUID | None = None
+    invoice_name: str | None = None
+    source_document_type: str | None = None
+    source_document_id: str | None = None
+    amount_paid: Decimal | None = None
+    payment_id: UUID | str | None = None
+
+
+@router.post(
+    "/invoices/mark-paid/",
+    response_model=InvoiceCreatedResponse,
+    summary="Mark invoice as paid or partially paid",
+)
+async def mark_invoice_paid_endpoint(
+    body: MarkInvoicePaidRequest,
+    _: None = InternalAuth,
+    session: AsyncSession = Depends(get_db),
+) -> InvoiceCreatedResponse:
+    stmt = select(Invoice).where(Invoice.is_deleted.is_(False))
+    if body.invoice_id:
+        stmt = stmt.where(Invoice.id == body.invoice_id)
+    elif body.invoice_name:
+        stmt = stmt.where(Invoice.name == body.invoice_name)
+    elif body.source_document_type and body.source_document_id:
+        stmt = stmt.where(
+            Invoice.source_document_type == body.source_document_type,
+            Invoice.source_document_id == body.source_document_id,
+        )
+    else:
+        raise HTTPException(status_code=400, detail="Missing invoice identifier.")
+
+    res = await session.execute(stmt)
+    inv = res.scalar_one_or_none()
+    if not inv:
+        raise HTTPException(status_code=404, detail="Invoice not found.")
+
+    svc = InvoiceService(session)
+    inv = await svc.mark_invoice_paid(
+        inv.id,
+        amount_paid=body.amount_paid,
+        payment_id=body.payment_id,
+    )
+    await session.commit()
+    return InvoiceCreatedResponse(
+        invoice_id=inv.id,
+        invoice_name=inv.name,
+        state=inv.state,
+        amount_total=Decimal(str(inv.amount_total)),
     )
 
 
