@@ -11,6 +11,9 @@ Design principles:
 - Every JournalEntry must have balanced journal items (sum(debit) == sum(credit)).
 - JournalItem.debit_amount and JournalItem.credit_amount are both stored (never negative).
 - The `amount_currency` field stores the original-currency amount for multi-currency support.
+- Accounting role note: A JournalEntry is an immutable General Ledger transaction and
+  never has a 'paid' state. In double-entry bookkeeping, an invoice document can be 'paid',
+  while its linked journal entry remains 'posted' to the general ledger.
 """
 from __future__ import annotations
 

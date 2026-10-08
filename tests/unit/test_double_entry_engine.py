@@ -51,6 +51,7 @@ def make_entry_data(items: list[JournalItemData] | None = None) -> JournalEntryD
         journal_id=JOURNAL_ID,
         entry_date=date(2024, 1, 15),
         items=items or make_items(),
+        name="JE/2024/001",
     )
 
 
@@ -230,6 +231,9 @@ class TestPosting:
         mock_entry.name = "JE/2024/001"
 
         session = AsyncMock()
+        mock_result = MagicMock()
+        mock_result.scalars.return_value.all.return_value = [mock_item_a, mock_item_b]
+        session.execute.return_value = mock_result
         # validate_period_open should return None (no period configured = open)
         with patch.object(engine, "validate_period_open", return_value=None):
             await engine.post_entry(session, mock_entry, posted_by="admin")

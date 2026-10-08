@@ -11,7 +11,14 @@ Invoice types:
 
 State machine:
   draft → confirmed → posted → (paid | partial | cancelled)
-  posted entries create journal entries automatically
+  posted entries create journal entries automatically.
+
+Accounting role note:
+  An Invoice is a commercial document (AR subledger). When fully paid, invoice.state becomes 'paid'.
+  However, the linked General Ledger JournalEntry (invoice.journal_entry_id) remains 'posted'.
+  In double-entry bookkeeping, journal entries are immutable audit records in the GL and never have
+  a 'paid' state. The payment itself generates its own separate 'posted' journal entry that reconciles
+  the Accounts Receivable balance.
 """
 from __future__ import annotations
 
