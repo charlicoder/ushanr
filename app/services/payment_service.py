@@ -99,9 +99,13 @@ class CreatePaymentData:
     payment_data: dict | None = None
     created_by: str | None = None
     created_by_name: str | None = None
+    is_refund: bool = False
+    refund_number: str | None = None
+    cancellation_fee: Decimal = ZERO
 
     def __post_init__(self) -> None:
         self.amount = Decimal(str(self.amount))
+        self.cancellation_fee = Decimal(str(self.cancellation_fee or "0"))
         valid_types = {t.value for t in PaymentType}
         if self.payment_type not in valid_types:
             raise ValidationError(
@@ -228,14 +232,14 @@ class PaymentService:
         return account
 
     async def _fetch_ar_ap_account(
-        self, company_id: UUID, payment_type: str
+        self, company_id: UUID, payment_type: str, is_refund: bool = False
     ) -> Account:
         """
-        Resolve AR (inbound) or AP (outbound) account for the company.
+        Resolve AR (inbound or customer refund) or AP (outbound vendor) account for the company.
 
         Uses first reconcilable ASSET (AR) or LIABILITY (AP) account found.
         """
-        if payment_type == PaymentType.INBOUND.value:
+        if payment_type == PaymentType.INBOUND.value or is_refund:
             acct_type = AccountType.ASSET.value
         else:
             acct_type = AccountType.LIABILITY.value
@@ -252,7 +256,7 @@ class PaymentService:
         account = result.scalar_one_or_none()
         if account is None:
             raise ValidationError(
-                f"No {'AR' if payment_type == PaymentType.INBOUND.value else 'AP'} account "
+                f"No {'AR' if (payment_type == PaymentType.INBOUND.value or is_refund) else 'AP'} account "
                 f"found for company {company_id}."
             )
         return account
@@ -294,6 +298,9 @@ class PaymentService:
             payment_data=data.payment_data,
             created_by=data.created_by,
             created_by_name=data.created_by_name,
+            is_refund=data.is_refund,
+            refund_number=data.refund_number,
+            cancellation_fee=float(data.cancellation_fee),
         )
         self._session.add(payment)
         await self._session.flush()
@@ -341,12 +348,13 @@ class PaymentService:
         amount = Decimal(str(payment.amount)).quantize(PRECISION, rounding=ROUND_HALF_UP)
 
         # Resolve accounts
+        is_refund = bool(getattr(payment, "is_refund", False))
         journal = await self._fetch_journal(payment.journal_id)
         bank_account = await self._fetch_bank_account(
             payment.company_id, journal, payment.payment_type
         )
         ar_ap_account = await self._fetch_ar_ap_account(
-            payment.company_id, payment.payment_type
+            payment.company_id, payment.payment_type, is_refund=is_refund
         )
 
         if payment.payment_type == PaymentType.INBOUND.value:
@@ -365,6 +373,27 @@ class PaymentService:
                     debit=ZERO,
                     credit=amount,
                     name=f"AR cleared: {payment.name or payment_id}",
+                    partner_id=payment.partner_id,
+                    currency_code=payment.currency_code,
+                ),
+            ]
+        elif is_refund:
+            # Outbound customer refund: Dr AR, Cr Bank
+            ref_label = payment.refund_number or payment.name or payment_id
+            journal_items = [
+                JournalItemData(
+                    account_id=ar_ap_account.id,
+                    debit=amount,
+                    credit=ZERO,
+                    name=f"Customer refund: {ref_label}",
+                    partner_id=payment.partner_id,
+                    currency_code=payment.currency_code,
+                ),
+                JournalItemData(
+                    account_id=bank_account.id,
+                    debit=ZERO,
+                    credit=amount,
+                    name=f"Bank disbursed (refund): {ref_label}",
                     partner_id=payment.partner_id,
                     currency_code=payment.currency_code,
                 ),

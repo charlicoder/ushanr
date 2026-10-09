@@ -48,9 +48,28 @@ async def lifespan(app: FastAPI):
 
     # Initialise DB engine and session factory
     try:
+        import sqlalchemy as sa
         engine = get_engine()
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            try:
+                await conn.execute(
+                    sa.text(
+                        "ALTER TABLE anr_payments ADD COLUMN IF NOT EXISTS refund_number VARCHAR(100);"
+                    )
+                )
+                await conn.execute(
+                    sa.text(
+                        "ALTER TABLE anr_payments ADD COLUMN IF NOT EXISTS is_refund BOOLEAN NOT NULL DEFAULT FALSE;"
+                    )
+                )
+                await conn.execute(
+                    sa.text(
+                        "ALTER TABLE anr_payments ADD COLUMN IF NOT EXISTS cancellation_fee NUMERIC(20, 3) NOT NULL DEFAULT 0.000;"
+                    )
+                )
+            except Exception as col_exc:
+                logger.debug("ensure_anr_payments_refund_columns_note", error=str(col_exc))
         logger.info("database_schema_initialized")
     except Exception as exc:
         logger.warning("database_schema_init_warning", error=str(exc))

@@ -60,6 +60,8 @@ class Payment(UUIDPrimaryKeyMixin, CompanyMixin, TimestampMixin, Base):
     # Reference
     name: Mapped[str | None] = mapped_column(String(100), nullable=True, unique=True, index=True)
     reference: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    refund_number: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)
+    is_refund: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
     payment_type: Mapped[str] = mapped_column(
         String(20), nullable=False, default=PaymentType.INBOUND.value, index=True
     )
@@ -97,6 +99,7 @@ class Payment(UUIDPrimaryKeyMixin, CompanyMixin, TimestampMixin, Base):
     # Amounts
     amount: Mapped[float] = mapped_column(Numeric(20, 3), nullable=False)
     amount_residual: Mapped[float] = mapped_column(Numeric(20, 3), nullable=False, default=0)
+    cancellation_fee: Mapped[float] = mapped_column(Numeric(20, 3), nullable=False, default=0, server_default="0.000")
     currency_code: Mapped[str] = mapped_column(String(3), nullable=False, default="KWD")
 
     # Payment method/provider info

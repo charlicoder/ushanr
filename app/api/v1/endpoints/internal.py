@@ -144,6 +144,12 @@ class CreditNoteRequest(BaseModel):
     source_document_id: str
     notes: str | None = None
     cancellation_date: date | None = None
+    cancellation_fee: Decimal = Decimal("0.000")
+    refund_amount: Decimal | None = None
+    refund_method: str | None = None
+    refund_number: str | None = None
+    branch_id: UUID | None = None
+    processed_by: str | None = None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -585,20 +591,61 @@ async def create_credit_note(
             amount_total=Decimal(str(existing_cn_invoice.amount_total)),
         )
 
-    # Build credit note lines mirroring the original invoice lines
-    cn_lines = [
-        InvoiceLineData(
-            account_id=line.account_id,
-            name=line.name,
-            quantity=Decimal(str(line.quantity)),
-            unit_price=Decimal(str(line.unit_price)),
-            discount=Decimal(str(line.discount)),
-            tax_id=line.tax_id,
-            analytic_account_id=line.analytic_account_id,
-            product_id=line.product_id,
+    orig_total = Decimal(str(original.amount_total))
+    fee = Decimal(str(body.cancellation_fee or "0.000"))
+    if body.refund_amount is not None:
+        eff_refund_amount = Decimal(str(body.refund_amount))
+    elif fee > Decimal("0.000"):
+        eff_refund_amount = max(Decimal("0.000"), orig_total - fee)
+    else:
+        eff_refund_amount = orig_total
+
+    # Build credit note lines mirroring the original invoice lines (adjusted for fee if present)
+    cn_lines = []
+    if eff_refund_amount < orig_total and len(original.lines) == 1:
+        single_line = original.lines[0]
+        cn_lines.append(
+            InvoiceLineData(
+                account_id=single_line.account_id,
+                name=f"{single_line.name} (Refund after fee {fee} KWD)" if fee > 0 else single_line.name,
+                quantity=Decimal("1"),
+                unit_price=eff_refund_amount,
+                discount=Decimal("0"),
+                tax_id=single_line.tax_id,
+                analytic_account_id=single_line.analytic_account_id,
+                product_id=single_line.product_id,
+            )
         )
-        for line in original.lines
-    ]
+    elif eff_refund_amount < orig_total and len(original.lines) > 1 and orig_total > Decimal("0"):
+        ratio = eff_refund_amount / orig_total
+        for line in original.lines:
+            scaled_price = (Decimal(str(line.unit_price)) * ratio).quantize(Decimal("0.001"))
+            cn_lines.append(
+                InvoiceLineData(
+                    account_id=line.account_id,
+                    name=line.name,
+                    quantity=Decimal(str(line.quantity)),
+                    unit_price=scaled_price,
+                    discount=Decimal(str(line.discount)),
+                    tax_id=line.tax_id,
+                    analytic_account_id=line.analytic_account_id,
+                    product_id=line.product_id,
+                )
+            )
+    else:
+        for line in original.lines:
+            cn_lines.append(
+                InvoiceLineData(
+                    account_id=line.account_id,
+                    name=line.name,
+                    quantity=Decimal(str(line.quantity)),
+                    unit_price=Decimal(str(line.unit_price)),
+                    discount=Decimal(str(line.discount)),
+                    tax_id=line.tax_id,
+                    analytic_account_id=line.analytic_account_id,
+                    product_id=line.product_id,
+                )
+            )
 
     cn_date = body.cancellation_date or date.today()
     svc = InvoiceService(session)
@@ -610,14 +657,61 @@ async def create_credit_note(
         invoice_date=cn_date,
         lines=cn_lines,
         currency_code=original.currency_code,
-        reference=f"CN-{original.name or original.reference or original.source_document_ref or body.source_document_id}",
+        reference=f"CN-{body.refund_number or original.name or original.reference or original.source_document_ref or body.source_document_id}",
         notes=body.notes or f"Credit note for {body.source_document_type} {body.source_document_id}",
         source_document_type=f"{body.source_document_type}_credit",
         source_document_id=body.source_document_id,
         source_document_ref=original.source_document_ref or "",
     )
     credit_note = await svc.create_invoice(cn_data)
-    credit_note = await svc.post_invoice(credit_note.id, posted_by="ushnotice")
+    credit_note = await svc.post_invoice(credit_note.id, posted_by=body.processed_by or "ushnotice")
+
+    # If money was refunded to customer, record and allocate an OUTBOUND payment
+    if eff_refund_amount > Decimal("0.000") and (original.state in (InvoiceState.PAID.value, InvoiceState.PARTIAL.value) or body.refund_amount is not None):
+        from app.models.journal import Journal, JournalType
+        from app.models.payment import PaymentType
+        from app.services.payment_service import CreatePaymentData, PaymentService
+
+        pmt_journal_id = body.journal_id
+        if body.refund_method:
+            target_jtype = JournalType.CASH.value if str(body.refund_method).lower() == "cash" else JournalType.BANK.value
+            j_stmt = select(Journal).where(
+                Journal.company_id == original.company_id,
+                Journal.journal_type == target_jtype,
+                Journal.is_active.is_(True),
+            ).limit(1)
+            j_res = await session.execute(j_stmt)
+            matched_j = j_res.scalar_one_or_none()
+            if matched_j:
+                pmt_journal_id = matched_j.id
+
+        pmt_svc = PaymentService(session)
+        pmt_data = CreatePaymentData(
+            company_id=original.company_id,
+            journal_id=pmt_journal_id,
+            payment_type=PaymentType.OUTBOUND.value,
+            amount=eff_refund_amount,
+            payment_date=cn_date,
+            currency_code=original.currency_code,
+            partner_id=original.partner_id,
+            partner_name=getattr(original, "partner_name", None),
+            payment_method=body.refund_method or "cash",
+            reference=body.refund_number or f"REF-{credit_note.name or original.name}",
+            notes=body.notes or f"Customer refund for {body.source_document_type} {body.source_document_id}",
+            created_by=body.processed_by or "ushnotice",
+            is_refund=True,
+            refund_number=body.refund_number,
+            cancellation_fee=fee,
+        )
+        outbound_pmt = await pmt_svc.create_payment(pmt_data)
+        outbound_pmt = await pmt_svc.post_payment(outbound_pmt.id, posted_by=body.processed_by or "ushnotice")
+        await pmt_svc.allocate_payment(
+            payment_id=outbound_pmt.id,
+            invoice_id=credit_note.id,
+            amount=eff_refund_amount,
+            allocation_date=cn_date,
+        )
+
     await session.commit()
 
     logger.info(
