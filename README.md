@@ -236,3 +236,25 @@ python -m pytest -v
 - `ushauth`: 8002
 - `ushbooknpay`: 8003
 - `ushanr`: **8007**
+
+
+```
+
+pg_dump -h ushspa-aurora-pg.cluster-cjokc2mmqp9e.ap-south-1.rds.amazonaws.com -p 5432 \
+  -U postgres \
+  -d ushauth_prod_db \
+  -Fc \
+  -f ushauth_prod_db.dump
+
+
+pg_restore -h localhost -p 5432 \
+  -U postgres \
+  -d ushauth_prod \
+  --verbose \
+  ushauth_prod_db.dump
+
+
+python scripts/init_production_data.py --company-name "USHSPA" --year 2026
+
+
+```

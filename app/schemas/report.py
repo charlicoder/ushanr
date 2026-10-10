@@ -17,6 +17,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+from app.utils.timezone import LocalDateTime, utc_now
 
 
 # ---------------------------------------------------------------------------
@@ -113,8 +114,8 @@ class TrialBalanceResponse(BaseModel):
     total_period_credit: Decimal
     total_closing_debit: Decimal
     total_closing_credit: Decimal
-    generated_at: datetime = Field(
-        default_factory=datetime.utcnow,
+    generated_at: LocalDateTime = Field(
+        default_factory=utc_now,
         description="UTC timestamp when the report was generated",
     )
 
@@ -180,7 +181,7 @@ class PnLResponse(BaseModel):
     gross_margin_pct: Decimal = Field(default=Decimal("0.0"), description="Gross Profit / Revenue %")
     net_margin_pct: Decimal = Field(default=Decimal("0.0"), description="Net Income / Revenue %")
     ebitda: Decimal = Field(default=Decimal("0.0"), description="Earnings before interest, taxes, depreciation & amortization")
-    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    generated_at: LocalDateTime = Field(default_factory=utc_now)
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +238,7 @@ class BalanceSheetResponse(BaseModel):
         ...,
         description="total_liabilities + total_equity — must equal total_assets",
     )
-    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    generated_at: LocalDateTime = Field(default_factory=utc_now)
 
 
 # ---------------------------------------------------------------------------
@@ -295,7 +296,7 @@ class ARAgingResponse(BaseModel):
         description="Aggregated totals across all partners for each bucket",
     )
     grand_total: Decimal = Field(..., description="Total AR outstanding")
-    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    generated_at: LocalDateTime = Field(default_factory=utc_now)
 
 
 class APAgingResponse(BaseModel):
@@ -317,7 +318,7 @@ class APAgingResponse(BaseModel):
         description="Aggregated totals across all partners for each bucket",
     )
     grand_total: Decimal = Field(..., description="Total AP outstanding")
-    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    generated_at: LocalDateTime = Field(default_factory=utc_now)
 
 
 # ---------------------------------------------------------------------------
@@ -356,7 +357,7 @@ class MonthlyProfitLossResponse(BaseModel):
     total_net_profit: Decimal
     overall_gross_margin_pct: Decimal
     overall_net_margin_pct: Decimal
-    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    generated_at: LocalDateTime = Field(default_factory=utc_now)
 
 
 # ---------------------------------------------------------------------------
@@ -390,7 +391,7 @@ class AnalyticProfitLossResponse(BaseModel):
     total_revenue: Decimal
     total_cost: Decimal
     total_net: Decimal
-    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    generated_at: LocalDateTime = Field(default_factory=utc_now)
 
 
 # ---------------------------------------------------------------------------
@@ -411,4 +412,4 @@ class PartnerFinancialSummaryResponse(BaseModel):
     balance_due: Decimal
     lifetime_journal_items_count: int
     currency_code: str
-    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    generated_at: LocalDateTime = Field(default_factory=utc_now)

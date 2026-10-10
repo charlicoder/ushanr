@@ -19,6 +19,7 @@ from uuid import UUID
 
 from fastapi import Query
 from pydantic import BaseModel, ConfigDict, Field
+from app.utils.timezone import LocalDateTime
 
 
 # ---------------------------------------------------------------------------
@@ -132,8 +133,8 @@ class AccountResponse(BaseModel):
     is_active: bool
     currency_code: str | None = None
     description: str | None = None
-    created_at: datetime
-    updated_at: datetime
+    created_at: LocalDateTime
+    updated_at: LocalDateTime
 
 
 class AccountBalanceResponse(BaseModel):

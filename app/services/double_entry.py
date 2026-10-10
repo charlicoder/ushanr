@@ -33,6 +33,7 @@ from app.models.fiscal import AccountingPeriod, PeriodState
 from app.models.journal import Journal
 from app.models.journal_entry import EntryState, JournalEntry, JournalItem
 from app.models.sequence import DocumentSequence
+from app.utils.timezone import local_today
 
 logger = get_logger(__name__)
 
@@ -159,7 +160,7 @@ class DoubleEntryEngine:
         Generate sequential journal entry name.
         Uses journal sequence_prefix or journal code (e.g. MISC/2026/09/0001, BNK/2026/09/0001).
         """
-        dt = entry_date or date.today()
+        dt = entry_date or local_today()
         year = dt.year
         month = dt.month
 

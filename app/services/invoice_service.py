@@ -63,6 +63,7 @@ from app.services.double_entry import (
     JournalItemData,
     double_entry_engine,
 )
+from app.utils.timezone import local_today
 
 logger = get_logger(__name__)
 
@@ -344,7 +345,7 @@ class InvoiceService:
             InvoiceType.VENDOR_CREDIT.value: "RBILL",
         }
         prefix = prefix_map.get(invoice_type, "INV")
-        ref_date = invoice_date or date.today()
+        ref_date = invoice_date or local_today()
         date_prefix = f"{prefix}/{ref_date.strftime('%Y/%m')}/"
 
         # Highest existing sequence for this prefix/year/month (names are globally unique)
@@ -374,7 +375,7 @@ class InvoiceService:
         """
         # Invoice date is always the date the invoice record is created,
         # never the source document (booking/order) date.
-        data.invoice_date = date.today()
+        data.invoice_date = local_today()
         if data.accounting_date is None:
             data.accounting_date = data.invoice_date
 
@@ -904,7 +905,7 @@ class InvoiceService:
                     invoice_id=invoice.id,
                     amount=float(paid),
                     currency_code=invoice.currency_code,
-                    allocation_date=date.today(),
+                    allocation_date=local_today(),
                 )
                 self._session.add(alloc)
                 new_pmt_residual = max(ZERO, Decimal(str(pmt.amount_residual)) - paid)
@@ -955,7 +956,7 @@ class InvoiceService:
             )
             entry = entry_result.scalar_one_or_none()
             if entry is not None:
-                reversal_date = cancellation_date or date.today()
+                reversal_date = cancellation_date or local_today()
                 await self._engine.reverse_entry(
                     self._session,
                     entry=entry,

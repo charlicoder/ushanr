@@ -65,6 +65,7 @@ from app.services.double_entry import (
     JournalItemData,
     double_entry_engine,
 )
+from app.utils.timezone import local_today
 
 logger = get_logger(__name__)
 
@@ -552,7 +553,7 @@ class PaymentService:
             invoice_id=invoice.id,
             amount=float(amount),
             currency_code=payment.currency_code,
-            allocation_date=allocation_date or date.today(),
+            allocation_date=allocation_date or local_today(),
         )
         self._session.add(alloc)
 
@@ -652,7 +653,7 @@ class PaymentService:
                 )
                 entry = entry_result.scalar_one_or_none()
                 if entry is not None:
-                    reversal_date = cancellation_date or date.today()
+                    reversal_date = cancellation_date or local_today()
                     await self._engine.reverse_entry(
                         self._session,
                         entry=entry,

@@ -32,6 +32,7 @@ from app.models.invoice import Invoice, InvoiceState
 from app.models.journal import Journal
 from app.models.payment import Payment, PaymentAllocation, PaymentState, PaymentType
 from app.services.double_entry import JournalEntryData, JournalItemData, double_entry_engine
+from app.utils.timezone import local_today
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -356,7 +357,7 @@ async def allocate_payment(
         invoice_id=inv.id,
         amount=float(alloc_amount),
         currency_code=pmt.currency_code,
-        allocation_date=date.today(),
+        allocation_date=local_today(),
     )
     db.add(alloc)
 
@@ -423,7 +424,7 @@ async def cancel_payment(
         if entry:
             try:
                 await double_entry_engine.reverse_entry(
-                    db, entry, reversal_date=date.today(),
+                    db, entry, reversal_date=local_today(),
                     reversal_narration=f"Cancellation of payment {pmt.id}",
                     posted_by=(payload or {}).get("cancelled_by"),
                 )

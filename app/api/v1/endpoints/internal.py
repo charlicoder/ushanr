@@ -42,6 +42,7 @@ from app.services.invoice_service import (
     InvoiceLineData,
     InvoiceService,
 )
+from app.utils.timezone import local_today
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -647,7 +648,7 @@ async def create_credit_note(
                 )
             )
 
-    cn_date = body.cancellation_date or date.today()
+    cn_date = body.cancellation_date or local_today()
     svc = InvoiceService(session)
     cn_data = CreateInvoiceData(
         company_id=original.company_id,

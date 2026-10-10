@@ -13,6 +13,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
 from app.models.mixins import CompanyMixin, TimestampMixin, UUIDPrimaryKeyMixin
+from app.utils.timezone import local_now
 
 
 class DocumentSequence(UUIDPrimaryKeyMixin, CompanyMixin, TimestampMixin, Base):
@@ -46,7 +47,7 @@ class DocumentSequence(UUIDPrimaryKeyMixin, CompanyMixin, TimestampMixin, Base):
         if self.prefix:
             parts.append(self.prefix)
         if self.use_date_range:
-            parts.append(str(datetime.now().year))
+            parts.append(str(local_now().year))
         parts.append(number_str)
         if self.suffix:
             parts.append(self.suffix)

@@ -28,6 +28,7 @@ from app.models.account import Account, AccountType
 from app.models.invoice import Invoice, InvoiceState, InvoiceType
 from app.models.journal_entry import EntryState, JournalEntry, JournalItem
 from app.models.partner import Partner
+from app.utils.timezone import local_today
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -51,7 +52,7 @@ async def general_ledger(
     if company_id is None:
         raise HTTPException(status_code=400, detail="Company ID required")
     if date_to is None:
-        date_to = date.today()
+        date_to = local_today()
     if date_from is None:
         date_from = date(2020, 1, 1)
     q = (
@@ -134,7 +135,7 @@ async def trial_balance(
     if company_id is None:
         raise HTTPException(status_code=400, detail="Company ID required")
     if date_to is None:
-        date_to = date.today()
+        date_to = local_today()
     if date_from is None:
         date_from = date(2020, 1, 1)
     q = (
@@ -213,7 +214,7 @@ async def profit_and_loss(
     if company_id is None:
         raise HTTPException(status_code=400, detail="Company ID required")
     if date_to is None:
-        date_to = date.today()
+        date_to = local_today()
     if date_from is None:
         date_from = date(2020, 1, 1)
     revenue_types = [AccountType.REVENUE.value]
@@ -307,7 +308,7 @@ async def balance_sheet(
     if company_id is None:
         raise HTTPException(status_code=400, detail="Company ID required")
     if as_of_date is None:
-        as_of_date = date.today()
+        as_of_date = local_today()
     asset_types = [AccountType.ASSET.value]
     liability_types = [AccountType.LIABILITY.value]
     equity_types = [AccountType.EQUITY.value]
@@ -435,7 +436,7 @@ async def ar_aging(
     if company_id is None:
         raise HTTPException(status_code=400, detail="Company ID required")
     if as_of_date is None:
-        as_of_date = date.today()
+        as_of_date = local_today()
     return await _aging_report(db, company_id, as_of_date, is_ar=True)
 
 
@@ -448,7 +449,7 @@ async def ap_aging(
     if company_id is None:
         raise HTTPException(status_code=400, detail="Company ID required")
     if as_of_date is None:
-        as_of_date = date.today()
+        as_of_date = local_today()
     return await _aging_report(db, company_id, as_of_date, is_ar=False)
 
 
@@ -561,7 +562,7 @@ async def cash_flow(
     if company_id is None:
         raise HTTPException(status_code=400, detail="Company ID required")
     if date_to is None:
-        date_to = date.today()
+        date_to = local_today()
     if date_from is None:
         date_from = date(2020, 1, 1)
     from app.models.journal import Journal, JournalType
@@ -638,7 +639,7 @@ async def monthly_profit_loss(
     if company_id is None:
         raise HTTPException(status_code=400, detail="Company ID required")
     if date_to is None:
-        date_to = date.today()
+        date_to = local_today()
     if date_from is None:
         date_from = date(date_to.year, 1, 1)
 
@@ -724,7 +725,7 @@ async def analytic_profit_loss(
     if company_id is None:
         raise HTTPException(status_code=400, detail="Company ID required")
     if date_to is None:
-        date_to = date.today()
+        date_to = local_today()
     if date_from is None:
         date_from = date(2020, 1, 1)
 

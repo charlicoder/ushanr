@@ -19,6 +19,7 @@ from uuid import UUID
 
 from fastapi import Query
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from app.utils.timezone import LocalDateTime
 
 
 # ---------------------------------------------------------------------------
@@ -103,8 +104,8 @@ class JournalItemResponse(BaseModel):
     partner_id: UUID | None = None
     analytic_account_id: UUID | None = None
     currency_code: str
-    created_at: datetime
-    updated_at: datetime
+    created_at: LocalDateTime
+    updated_at: LocalDateTime
 
 
 # ---------------------------------------------------------------------------
@@ -174,13 +175,13 @@ class JournalEntryResponse(BaseModel):
         description="UUID of the original entry if this is a reversal",
     )
     posted_by: str | None = None
-    posted_at: datetime | None = None
+    posted_at: LocalDateTime | None = None
     items: list[JournalItemResponse] = Field(
         default_factory=list,
         description="All debit / credit lines belonging to this entry",
     )
-    created_at: datetime
-    updated_at: datetime
+    created_at: LocalDateTime
+    updated_at: LocalDateTime
 
 
 # ---------------------------------------------------------------------------

@@ -36,6 +36,7 @@ from app.models.journal_entry import JournalEntry
 from app.models.partner import Partner
 from app.services.double_entry import JournalEntryData, JournalItemData, double_entry_engine
 from app.services.invoice_service import InvoiceService
+from app.utils.timezone import local_today
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -211,7 +212,7 @@ async def create_invoice(
     inv_type = payload.get("invoice_type", InvoiceType.INVOICE.value)
 
     # Invoice date is always the creation date (never taken from the payload/source doc)
-    today = date.today()
+    today = local_today()
 
     # Generate sequential name if not provided
     svc = InvoiceService(db)
@@ -581,7 +582,7 @@ async def cancel_invoice(
                 await double_entry_engine.reverse_entry(
                     db,
                     entry,
-                    reversal_date=date.today(),
+                    reversal_date=local_today(),
                     reversal_narration=f"Cancellation of {inv.name or inv.id}",
                     posted_by=(payload or {}).get("cancelled_by"),
                 )
@@ -621,7 +622,7 @@ async def create_credit_note(
         else InvoiceType.VENDOR_CREDIT.value
     )
 
-    cn_date = (payload or {}).get("credit_date") and date.fromisoformat((payload or {})["credit_date"]) or date.today()
+    cn_date = (payload or {}).get("credit_date") and date.fromisoformat((payload or {})["credit_date"]) or local_today()
     svc = InvoiceService(db)
     cn_name = await svc._generate_invoice_name(inv.company_id, cn_type, cn_date)
 

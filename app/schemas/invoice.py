@@ -18,6 +18,7 @@ from uuid import UUID
 
 from fastapi import Query
 from pydantic import BaseModel, ConfigDict, Field
+from app.utils.timezone import LocalDateTime
 
 
 
@@ -117,8 +118,8 @@ class InvoiceLineResponse(BaseModel):
     subtotal: Decimal = Field(..., description="quantity × unit_price × (1 − discount/100)")
     tax_amount: Decimal = Field(..., description="Computed tax amount for this line")
     total: Decimal = Field(..., description="subtotal + tax_amount")
-    created_at: datetime
-    updated_at: datetime
+    created_at: LocalDateTime
+    updated_at: LocalDateTime
 
 
 
@@ -237,8 +238,8 @@ class InvoiceResponse(BaseModel):
         default_factory=list,
         description="All line items belonging to this invoice",
     )
-    created_at: datetime
-    updated_at: datetime
+    created_at: LocalDateTime
+    updated_at: LocalDateTime
 
 
 

@@ -18,6 +18,7 @@ from uuid import UUID
 
 from fastapi import Query
 from pydantic import BaseModel, ConfigDict, Field
+from app.utils.timezone import LocalDateTime
 
 
 # ---------------------------------------------------------------------------
@@ -162,8 +163,8 @@ class PaymentResponse(BaseModel):
         description="UUID of the generated accounting journal entry",
     )
     created_by: str
-    created_at: datetime
-    updated_at: datetime
+    created_at: LocalDateTime
+    updated_at: LocalDateTime
 
 
 # ---------------------------------------------------------------------------

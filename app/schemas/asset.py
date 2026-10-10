@@ -11,6 +11,7 @@ from decimal import Decimal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+from app.utils.timezone import LocalDateTime
 
 
 class AssetStatusEnum(str, enum.Enum):
@@ -33,8 +34,8 @@ class AssetDepreciationLineResponse(BaseModel):
     depreciated_value: Decimal
     is_posted: bool
     journal_entry_id: UUID | None = None
-    created_at: datetime
-    updated_at: datetime
+    created_at: LocalDateTime
+    updated_at: LocalDateTime
 
 
 class AssetCreateRequest(BaseModel):
@@ -92,8 +93,8 @@ class AssetResponse(BaseModel):
     asset_group: str | None
     status: str
     partner_id: UUID | None
-    created_at: datetime
-    updated_at: datetime
+    created_at: LocalDateTime
+    updated_at: LocalDateTime
 
 
 class AssetDetailResponse(AssetResponse):
