@@ -26,7 +26,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -139,8 +139,8 @@ class InvoiceCreatedResponse(BaseModel):
 
 class CreditNoteRequest(BaseModel):
     """Create a credit note reversing an invoice for the given source document."""
-    company_id: UUID
-    journal_id: UUID
+    company_id: UUID | None = None
+    journal_id: UUID | None = None
     source_document_type: str
     source_document_id: str
     notes: str | None = None
@@ -649,11 +649,65 @@ async def create_credit_note(
             )
 
     cn_date = body.cancellation_date or local_today()
+    target_company_id = original.company_id or body.company_id
+
+    # Resolve a valid Credit Note journal for this company:
+    # 1. If body.journal_id is provided, verify it exists and is active for this company
+    eff_journal_id = None
+    if body.journal_id:
+        j_check = await session.execute(
+            select(Journal.id).where(
+                Journal.id == body.journal_id,
+                Journal.company_id == target_company_id,
+                Journal.is_active.is_(True),
+            )
+        )
+        eff_journal_id = j_check.scalar_one_or_none()
+
+    # 2. Prefer dedicated credit note journal for this company (e.g. code='RINV' or name ILIKE '%credit note%')
+    if not eff_journal_id:
+        cn_j_stmt = select(Journal.id).where(
+            Journal.company_id == target_company_id,
+            Journal.is_active.is_(True),
+            or_(
+                Journal.code == "RINV",
+                Journal.name.ilike("%credit note%"),
+            ),
+        ).limit(1)
+        cn_j_res = await session.execute(cn_j_stmt)
+        eff_journal_id = cn_j_res.scalar_one_or_none()
+
+    # 3. Fall back to original invoice's journal if valid
+    if not eff_journal_id and original.journal_id:
+        orig_j_stmt = select(Journal.id).where(
+            Journal.id == original.journal_id,
+            Journal.company_id == target_company_id,
+            Journal.is_active.is_(True),
+        )
+        orig_j_res = await session.execute(orig_j_stmt)
+        eff_journal_id = orig_j_res.scalar_one_or_none()
+
+    # 4. Fall back to any active sale journal for this company
+    if not eff_journal_id:
+        sale_j_stmt = select(Journal.id).where(
+            Journal.company_id == target_company_id,
+            Journal.journal_type == JournalType.SALE.value,
+            Journal.is_active.is_(True),
+        ).limit(1)
+        sale_j_res = await session.execute(sale_j_stmt)
+        eff_journal_id = sale_j_res.scalar_one_or_none()
+
+    if not eff_journal_id:
+        raise HTTPException(
+            status_code=500,
+            detail=f"No active journal found for company {target_company_id} to issue credit note.",
+        )
+
     svc = InvoiceService(session)
     cn_data = CreateInvoiceData(
-        company_id=original.company_id,
+        company_id=target_company_id,
         partner_id=original.partner_id,
-        journal_id=body.journal_id,
+        journal_id=eff_journal_id,
         invoice_type=InvoiceType.CREDIT_NOTE.value,
         invoice_date=cn_date,
         lines=cn_lines,
@@ -669,22 +723,52 @@ async def create_credit_note(
 
     # If money was refunded to customer, record and allocate an OUTBOUND payment
     if eff_refund_amount > Decimal("0.000") and (original.state in (InvoiceState.PAID.value, InvoiceState.PARTIAL.value) or body.refund_amount is not None):
-        from app.models.journal import Journal, JournalType
         from app.models.payment import PaymentType
         from app.services.payment_service import CreatePaymentData, PaymentService
 
-        pmt_journal_id = body.journal_id
-        if body.refund_method:
-            target_jtype = JournalType.CASH.value if str(body.refund_method).lower() == "cash" else JournalType.BANK.value
-            j_stmt = select(Journal).where(
-                Journal.company_id == original.company_id,
-                Journal.journal_type == target_jtype,
+        pmt_journal_id = None
+        ref_method_str = str(body.refund_method or "").strip().lower()
+        if ref_method_str == "cash":
+            j_stmt = select(Journal.id).where(
+                Journal.company_id == target_company_id,
+                Journal.journal_type == JournalType.CASH.value,
                 Journal.is_active.is_(True),
             ).limit(1)
             j_res = await session.execute(j_stmt)
-            matched_j = j_res.scalar_one_or_none()
-            if matched_j:
-                pmt_journal_id = matched_j.id
+            pmt_journal_id = j_res.scalar_one_or_none()
+        else:
+            if "knet" in ref_method_str:
+                knet_stmt = select(Journal.id).where(
+                    Journal.company_id == target_company_id,
+                    Journal.journal_type == JournalType.BANK.value,
+                    Journal.is_active.is_(True),
+                    or_(
+                        Journal.code.ilike("%knet%"),
+                        Journal.name.ilike("%knet%"),
+                    ),
+                ).limit(1)
+                knet_res = await session.execute(knet_stmt)
+                pmt_journal_id = knet_res.scalar_one_or_none()
+
+            if not pmt_journal_id:
+                bank_stmt = select(Journal.id).where(
+                    Journal.company_id == target_company_id,
+                    Journal.journal_type == JournalType.BANK.value,
+                    Journal.is_active.is_(True),
+                ).limit(1)
+                bank_res = await session.execute(bank_stmt)
+                pmt_journal_id = bank_res.scalar_one_or_none()
+
+        if not pmt_journal_id:
+            any_bank_cash = select(Journal.id).where(
+                Journal.company_id == target_company_id,
+                Journal.journal_type.in_([JournalType.BANK.value, JournalType.CASH.value]),
+                Journal.is_active.is_(True),
+            ).limit(1)
+            pmt_journal_id = (await session.execute(any_bank_cash)).scalar_one_or_none()
+
+        if not pmt_journal_id:
+            pmt_journal_id = eff_journal_id
 
         pmt_svc = PaymentService(session)
         pmt_data = CreatePaymentData(
