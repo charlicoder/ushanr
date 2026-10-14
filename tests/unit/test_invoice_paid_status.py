@@ -14,6 +14,13 @@ from uuid import uuid4
 import pytest
 
 from app.models.invoice import Invoice, InvoiceState, InvoiceType
+from app.models.company import Company
+from app.models.journal import Journal
+from app.api.v1.endpoints.internal import (
+    CreateInvoiceFromSourceRequest,
+    InvoiceLineIn,
+    create_invoice_from_source,
+)
 from app.services.invoice_service import (
     CreateInvoiceData,
     InvoiceLineData,
@@ -306,4 +313,101 @@ async def test_endpoint_create_invoice_from_source_with_gateway_payment_id():
         resp = await create_invoice_from_source(body=req, session=session)
         assert resp.invoice_name == "INV/2026/10/00099"
         assert resp.state == "paid"
+
+
+@pytest.mark.asyncio
+async def test_post_invoice_unpaid_booking_sets_posted_state():
+    """Verify that posting an unpaid booking invoice (amount_paid=0, payment_status='pending')
+    sets state to 'posted', NOT 'paid'."""
+    session = AsyncMock()
+    mock_engine = MagicMock()
+    mock_je = MagicMock(id=uuid4())
+    mock_engine.create_and_post_entry = AsyncMock(return_value=mock_je)
+
+    svc = InvoiceService(session, engine=mock_engine)
+
+    inv = Invoice(
+        id=uuid4(),
+        name="INV/2026/10/00001",
+        company_id=COMPANY_ID,
+        partner_id=PARTNER_ID,
+        journal_id=JOURNAL_ID,
+        invoice_type=InvoiceType.INVOICE.value,
+        invoice_date=date.today(),
+        state=InvoiceState.DRAFT.value,
+        amount_untaxed=40.0,
+        amount_tax=0.0,
+        amount_total=40.0,
+        amount_paid=0.0,
+        amount_residual=40.0,
+        currency_code="KWD",
+    )
+    inv.lines = [MagicMock(account_id=ACCOUNT_ID, subtotal=40.0, name="Service", analytic_account_id=None)]
+    inv.taxes = []
+
+    svc._fetch_invoice = AsyncMock(return_value=inv)
+    mock_ar = MagicMock(id=uuid4())
+    svc._fetch_ar_ap_account = AsyncMock(return_value=mock_ar)
+
+    posted_inv = await svc.post_invoice(inv.id, posted_by="ushnotice")
+
+    assert posted_inv.state == InvoiceState.POSTED.value
+    assert posted_inv.amount_paid == 0.0
+    assert posted_inv.amount_residual == 40.0
+
+
+@pytest.mark.asyncio
+async def test_endpoint_create_invoice_from_source_pending_booking_sets_posted_state():
+    """Verify that calling create_invoice_from_source for a booking with payment_status='pending'
+    and is_paid=False returns an invoice with state='posted'."""
+    session = AsyncMock()
+
+    mock_comp = Company(id=COMPANY_ID, name="USHSPA", currency_code="KWD", is_active=True)
+    mock_jour = Journal(id=JOURNAL_ID, company_id=COMPANY_ID, name="Sales", code="INV", is_active=True)
+
+    def mock_exec(stmt):
+        m = MagicMock()
+        m.scalar_one_or_none.return_value = None
+        m.scalars.return_value.all.return_value = []
+        m.scalars.return_value.first.return_value = None
+        return m
+
+    session.execute = AsyncMock(side_effect=mock_exec)
+
+    req = CreateInvoiceFromSourceRequest(
+        company_id=COMPANY_ID,
+        partner_id=PARTNER_ID,
+        journal_id=JOURNAL_ID,
+        invoice_date=date.today(),
+        source_document_type="booking",
+        source_document_id=str(uuid4()),
+        currency_code="KWD",
+        lines=[InvoiceLineIn(account_id=ACCOUNT_ID, name="Massage", unit_price=Decimal("40.000"))],
+        is_paid=False,
+        payment_status="pending",
+        amount_paid=Decimal("0.000"),
+        payment_id=None,
+    )
+
+    mock_invoice = MagicMock()
+    mock_invoice.id = uuid4()
+    mock_invoice.name = "INV/2026/10/00100"
+    mock_invoice.state = "posted"
+    mock_invoice.amount_total = Decimal("40.000")
+
+    from unittest.mock import patch
+    with patch("app.api.v1.endpoints.internal.InvoiceService") as MockSvc:
+        instance = MockSvc.return_value
+        instance.create_invoice = AsyncMock(return_value=mock_invoice)
+        instance.post_invoice = AsyncMock(return_value=mock_invoice)
+
+        resp = await create_invoice_from_source(body=req, session=session)
+        assert resp.invoice_name == "INV/2026/10/00100"
+        assert resp.state == "posted"
+        # Verify CreateInvoiceData passed to create_invoice had is_paid=False and amount_paid=0
+        call_args = instance.create_invoice.call_args[0][0]
+        assert call_args.is_paid is False
+        assert call_args.amount_paid == Decimal("0")
+        assert call_args.payment_id is None
+
 

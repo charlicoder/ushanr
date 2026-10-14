@@ -314,6 +314,19 @@ async def create_invoice_from_source(
     Idempotency: if an invoice for the same source_document_id already exists,
     the existing invoice is returned without creating a duplicate.
     """
+    p_status_clean = str(body.payment_status or "").strip().lower()
+    is_paid_signal = (
+        body.is_paid is True
+        or p_status_clean in ("paid", "success", "completed", "successful", "rewarded")
+    )
+    is_explicitly_unpaid = (
+        not is_paid_signal
+        and (
+            body.is_paid is False
+            or p_status_clean in ("pending", "not_initiated", "unpaid")
+        )
+    )
+
     # Idempotency check — do not create duplicate invoices
     existing = await session.execute(
         select(Invoice).where(
@@ -325,13 +338,8 @@ async def create_invoice_from_source(
     existing_invoice = existing.scalar_one_or_none()
     if existing_invoice is not None:
         # If existing invoice exists and caller indicates payment has completed, update to PAID
-        is_paid_signal = (
-            body.is_paid is True
-            or (body.payment_status and str(body.payment_status).strip().lower() in ("paid", "success", "completed", "successful", "rewarded"))
-            or (body.amount_paid is not None and body.amount_paid >= Decimal(str(existing_invoice.amount_total)))
-        )
-        if is_paid_signal and existing_invoice.state != InvoiceState.PAID.value:
-            paid_val = float(body.amount_paid if body.amount_paid is not None else existing_invoice.amount_total)
+        if not is_explicitly_unpaid and is_paid_signal and existing_invoice.state != InvoiceState.PAID.value:
+            paid_val = float(body.amount_paid if body.amount_paid is not None and body.amount_paid > Decimal("0") else existing_invoice.amount_total)
             existing_invoice.amount_paid = paid_val
             existing_invoice.amount_residual = max(0.0, float(Decimal(str(existing_invoice.amount_total)) - Decimal(str(paid_val))))
             if existing_invoice.amount_residual == 0.0:
@@ -443,11 +451,11 @@ async def create_invoice_from_source(
         source_document_type=body.source_document_type,
         source_document_id=body.source_document_id,
         source_document_ref=body.source_document_ref,
-        is_paid=body.is_paid if body.is_paid is not None else False,
+        is_paid=False if is_explicitly_unpaid else (body.is_paid if body.is_paid is not None else False),
         payment_status=body.payment_status,
-        amount_paid=body.amount_paid,
-        payment_id=effective_payment_id,
-        payment_reference=effective_payment_ref,
+        amount_paid=Decimal("0") if is_explicitly_unpaid else body.amount_paid,
+        payment_id=effective_payment_id if not is_explicitly_unpaid else None,
+        payment_reference=effective_payment_ref if not is_explicitly_unpaid else None,
     )
     invoice = await svc.create_invoice(data)
     invoice = await svc.post_invoice(invoice.id, posted_by="ushnotice")

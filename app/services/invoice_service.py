@@ -400,15 +400,23 @@ class InvoiceService:
             )
 
         # Determine payment association and initial payment/state
-        is_associated_payment = (
+        p_status_str = str(data.payment_status or "").strip().lower()
+        is_paid_signal = (
             bool(data.is_paid)
-            or (bool(data.payment_status) and str(data.payment_status).strip().lower() in ("paid", "success", "completed", "successful", "rewarded"))
-            or bool(data.payment_id)
-            or (data.amount_paid is not None and data.amount_paid > ZERO)
+            or p_status_str in ("paid", "success", "completed", "successful", "rewarded")
+        )
+        is_unpaid_status = (
+            p_status_str in ("pending", "not_initiated", "unpaid")
+            and not is_paid_signal
+        )
+
+        is_associated_payment = (
+            is_paid_signal
+            or (not is_unpaid_status and data.amount_paid is not None and data.amount_paid > ZERO)
         )
 
         matching_payment = None
-        if not is_associated_payment and (data.source_document_id or data.source_document_ref or data.reference):
+        if not is_unpaid_status and not is_associated_payment and (data.source_document_id or data.source_document_ref or data.reference):
             cand_refs = [str(r) for r in [data.source_document_ref, data.source_document_id, data.reference] if r]
             stmt_pmt = select(Payment).where(
                 Payment.company_id == data.company_id,
@@ -430,15 +438,12 @@ class InvoiceService:
         init_residual = amount_total
         init_state = InvoiceState.DRAFT.value
 
-        if is_associated_payment:
-            if data.amount_paid is not None:
+        if is_associated_payment and not is_unpaid_status:
+            if data.amount_paid is not None and data.amount_paid > ZERO:
                 init_paid = data.amount_paid
             elif matching_payment is not None:
                 init_paid = min(amount_total, Decimal(str(matching_payment.amount)))
-            elif (
-                data.is_paid
-                or (data.payment_status and str(data.payment_status).strip().lower() in ("paid", "success", "completed", "successful", "rewarded"))
-            ):
+            elif is_paid_signal:
                 init_paid = amount_total
 
             init_residual = max(ZERO, amount_total - init_paid)
