@@ -847,6 +847,8 @@ class InvoiceService:
         invoice.journal_entry_id = journal_entry.id
         if Decimal(str(invoice.amount_residual)) == ZERO and Decimal(str(invoice.amount_paid)) > ZERO:
             invoice.state = InvoiceState.PAID.value
+            journal_entry.state = EntryState.PAID.value
+            self._session.add(journal_entry)
         elif Decimal(str(invoice.amount_paid)) > ZERO and Decimal(str(invoice.amount_residual)) > ZERO:
             invoice.state = InvoiceState.PARTIAL.value
         else:
@@ -878,6 +880,11 @@ class InvoiceService:
         invoice.amount_residual = float(residual)
         if residual == ZERO:
             invoice.state = InvoiceState.PAID.value
+            if invoice.journal_entry_id:
+                je = await self._session.get(JournalEntry, invoice.journal_entry_id)
+                if je:
+                    je.state = EntryState.PAID.value
+                    self._session.add(je)
         elif paid > ZERO:
             invoice.state = InvoiceState.PARTIAL.value
 

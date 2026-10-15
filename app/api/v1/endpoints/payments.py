@@ -30,6 +30,7 @@ from app.core.logging import get_logger
 from app.core.security import require_permission
 from app.models.invoice import Invoice, InvoiceState
 from app.models.journal import Journal
+from app.models.journal_entry import EntryState, JournalEntry
 from app.models.payment import Payment, PaymentAllocation, PaymentState, PaymentType
 from app.services.double_entry import JournalEntryData, JournalItemData, double_entry_engine
 from app.utils.timezone import local_today
@@ -374,6 +375,11 @@ async def allocate_payment(
     inv.amount_residual = new_inv_residual
     if new_inv_residual <= 0:
         inv.state = InvoiceState.PAID.value
+        if inv.journal_entry_id:
+            je = await db.get(JournalEntry, inv.journal_entry_id)
+            if je:
+                je.state = EntryState.PAID.value
+                db.add(je)
     else:
         inv.state = InvoiceState.PARTIAL.value
 

@@ -186,7 +186,7 @@ class AccountRepository(BaseRepository[Account]):
 
         where_clauses = [
             JournalItem.account_id == account_id,
-            JournalEntry.state == "posted",
+            JournalEntry.state.in_(["posted", "paid"]),
         ]
 
         if date_from is not None:

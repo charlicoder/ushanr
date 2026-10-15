@@ -368,10 +368,10 @@ async def cancel_journal_entry(
     entry = result.scalar_one_or_none()
     if not entry:
         raise HTTPException(status_code=404, detail="Journal entry not found")
-    if entry.state == EntryState.POSTED.value:
+    if entry.state in (EntryState.POSTED.value, EntryState.PAID.value):
         raise HTTPException(
             status_code=409,
-            detail="Cannot cancel a posted journal entry. Create a reversal instead.",
+            detail="Cannot cancel a posted or paid journal entry. Create a reversal instead.",
         )
     entry.state = EntryState.CANCELLED.value
     db.add(entry)

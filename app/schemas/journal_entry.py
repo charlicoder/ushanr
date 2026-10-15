@@ -31,6 +31,7 @@ class EntryStateEnum(str, enum.Enum):
 
     draft = "draft"
     posted = "posted"
+    paid = "paid"
     cancelled = "cancelled"
     reversed = "reversed"
 

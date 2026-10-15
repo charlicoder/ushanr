@@ -52,7 +52,7 @@ from app.core.logging import get_logger
 from app.models.account import Account, AccountType
 from app.models.invoice import Invoice, InvoiceState, InvoiceType
 from app.models.journal import Journal
-from app.models.journal_entry import JournalEntry
+from app.models.journal_entry import EntryState, JournalEntry
 from app.models.payment import (
     Payment,
     PaymentAllocation,
@@ -578,6 +578,11 @@ class PaymentService:
 
         if new_invoice_residual == ZERO:
             invoice.state = InvoiceState.PAID.value
+            if invoice.journal_entry_id:
+                je = await self._session.get(JournalEntry, invoice.journal_entry_id)
+                if je:
+                    je.state = EntryState.PAID.value
+                    self._session.add(je)
         elif new_invoice_residual < Decimal(str(invoice.amount_total)):
             invoice.state = InvoiceState.PARTIAL.value
 

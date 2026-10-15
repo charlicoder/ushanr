@@ -73,7 +73,7 @@ async def general_ledger(
         .join(Account, JournalItem.account_id == Account.id)
         .where(
             JournalItem.company_id == company_id,
-            JournalEntry.state == EntryState.POSTED.value,
+            JournalEntry.state.in_([EntryState.POSTED.value, EntryState.PAID.value]),
             JournalEntry.accounting_date >= date_from,
             JournalEntry.accounting_date <= date_to,
         )
@@ -153,7 +153,7 @@ async def trial_balance(
             JournalEntry,
             and_(
                 JournalItem.entry_id == JournalEntry.id,
-                JournalEntry.state == EntryState.POSTED.value,
+                JournalEntry.state.in_([EntryState.POSTED.value, EntryState.PAID.value]),
                 JournalEntry.accounting_date >= date_from,
                 JournalEntry.accounting_date <= date_to,
             ),
@@ -235,7 +235,7 @@ async def profit_and_loss(
             JournalEntry,
             and_(
                 JournalItem.entry_id == JournalEntry.id,
-                JournalEntry.state == EntryState.POSTED.value,
+                JournalEntry.state.in_([EntryState.POSTED.value, EntryState.PAID.value]),
                 JournalEntry.accounting_date >= date_from,
                 JournalEntry.accounting_date <= date_to,
             ),
@@ -328,7 +328,7 @@ async def balance_sheet(
             JournalEntry,
             and_(
                 JournalItem.entry_id == JournalEntry.id,
-                JournalEntry.state == EntryState.POSTED.value,
+                JournalEntry.state.in_([EntryState.POSTED.value, EntryState.PAID.value]),
                 JournalEntry.accounting_date <= as_of_date,
             ),
             isouter=True,
@@ -384,7 +384,7 @@ async def balance_sheet(
             JournalEntry,
             and_(
                 JournalItem.entry_id == JournalEntry.id,
-                JournalEntry.state == EntryState.POSTED.value,
+                JournalEntry.state.in_([EntryState.POSTED.value, EntryState.PAID.value]),
                 JournalEntry.accounting_date <= as_of_date,
             ),
         )
@@ -598,7 +598,7 @@ async def cash_flow(
         .join(JournalEntry, JournalItem.entry_id == JournalEntry.id)
         .where(
             JournalItem.company_id == company_id,
-            JournalEntry.state == EntryState.POSTED.value,
+            JournalEntry.state.in_([EntryState.POSTED.value, EntryState.PAID.value]),
             JournalEntry.journal_id.in_([UUID(j) for j in journals]),
             JournalEntry.accounting_date >= date_from,
             JournalEntry.accounting_date <= date_to,

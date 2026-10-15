@@ -36,6 +36,7 @@ from app.models.account import Account, AccountType
 from app.models.company import Company
 from app.models.invoice import Invoice, InvoiceState, InvoiceType
 from app.models.journal import Journal, JournalType
+from app.models.journal_entry import EntryState, JournalEntry
 from app.models.partner import Partner, PartnerType
 from app.services.invoice_service import (
     CreateInvoiceData,
@@ -373,6 +374,11 @@ async def create_invoice_from_source(
             existing_invoice.amount_residual = max(0.0, float(Decimal(str(existing_invoice.amount_total)) - Decimal(str(paid_val))))
             if existing_invoice.amount_residual == 0.0:
                 existing_invoice.state = InvoiceState.PAID.value
+                if existing_invoice.journal_entry_id:
+                    je = await session.get(JournalEntry, existing_invoice.journal_entry_id)
+                    if je:
+                        je.state = EntryState.PAID.value
+                        session.add(je)
             elif existing_invoice.amount_paid > 0.0:
                 existing_invoice.state = InvoiceState.PARTIAL.value
             session.add(existing_invoice)
@@ -519,6 +525,11 @@ async def create_invoice_from_source(
     )
     invoice = await svc.create_invoice(data)
     invoice = await svc.post_invoice(invoice.id, posted_by="ushnotice")
+    if is_paid_signal and invoice.journal_entry_id:
+        je = await session.get(JournalEntry, invoice.journal_entry_id)
+        if je and je.state != EntryState.PAID.value:
+            je.state = EntryState.PAID.value
+            session.add(je)
     await session.commit()
 
     logger.info(

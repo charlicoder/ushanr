@@ -32,7 +32,7 @@ from app.core.logging import get_logger
 from app.core.security import require_permission
 from app.models.account import Account
 from app.models.invoice import Invoice, InvoiceLine, InvoiceState, InvoiceType
-from app.models.journal_entry import JournalEntry
+from app.models.journal_entry import EntryState, JournalEntry
 from app.models.partner import Partner
 from app.services.double_entry import JournalEntryData, JournalItemData, double_entry_engine
 from app.services.invoice_service import InvoiceService
@@ -535,7 +535,12 @@ async def post_invoice(
 
         journal_entry = await double_entry_engine.create_and_post_entry(db, entry_data)
 
-        inv.state = InvoiceState.POSTED.value
+        if Decimal(str(inv.amount_residual)) == ZERO and Decimal(str(inv.amount_paid)) > ZERO:
+            inv.state = InvoiceState.PAID.value
+            journal_entry.state = EntryState.PAID.value
+            db.add(journal_entry)
+        else:
+            inv.state = InvoiceState.POSTED.value
         inv.journal_entry_id = journal_entry.id
         inv.accounting_date = inv.accounting_date or inv.invoice_date
         db.add(inv)
@@ -568,8 +573,8 @@ async def cancel_invoice(
     if inv.state == InvoiceState.CANCELLED.value:
         raise HTTPException(status_code=409, detail="Invoice already cancelled")
 
-    # If posted, create reversal journal entry
-    if inv.state == InvoiceState.POSTED.value and inv.journal_entry_id:
+    # If posted or paid, create reversal journal entry
+    if inv.state in (InvoiceState.POSTED.value, InvoiceState.PAID.value) and inv.journal_entry_id:
         from sqlalchemy.orm import selectinload as sl
         entry_result = await db.execute(
             select(JournalEntry)

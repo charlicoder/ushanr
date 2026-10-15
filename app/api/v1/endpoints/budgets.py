@@ -157,7 +157,7 @@ async def budget_variance(budget_id: UUID, db: AsyncSession = Depends(get_db)) -
             .where(
                 JournalItem.account_id == line.account_id,
                 JournalItem.company_id == budget.company_id,
-                JournalEntry.state == EntryState.POSTED.value,
+                JournalEntry.state.in_([EntryState.POSTED.value, EntryState.PAID.value]),
                 JournalEntry.accounting_date >= line.date_from,
                 JournalEntry.accounting_date <= line.date_to,
             )

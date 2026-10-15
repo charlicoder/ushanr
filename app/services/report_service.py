@@ -366,7 +366,7 @@ class ReportService:
             .join(Account, JournalItem.account_id == Account.id)
             .where(
                 JournalEntry.company_id == company_id,
-                JournalEntry.state == EntryState.POSTED.value,
+                JournalEntry.state.in_([EntryState.POSTED.value, EntryState.PAID.value]),
                 JournalItem.date >= date_from,
                 JournalItem.date <= date_to,
             )
@@ -460,7 +460,7 @@ class ReportService:
                 Account.company_id == company_id,
                 Account.is_deleted.is_(False),
                 JournalEntry.company_id == company_id,
-                JournalEntry.state == EntryState.POSTED.value,
+                JournalEntry.state.in_([EntryState.POSTED.value, EntryState.PAID.value]),
                 JournalItem.date >= date_from,
                 JournalItem.date <= date_to,
             )
@@ -561,7 +561,7 @@ class ReportService:
                 Account.is_deleted.is_(False),
                 Account.account_type.in_(target_types),
                 JournalEntry.company_id == company_id,
-                JournalEntry.state == EntryState.POSTED.value,
+                JournalEntry.state.in_([EntryState.POSTED.value, EntryState.PAID.value]),
                 JournalItem.date >= date_from,
                 JournalItem.date <= date_to,
             )
@@ -723,7 +723,7 @@ class ReportService:
                 JournalEntry,
                 and_(
                     JournalItem.entry_id == JournalEntry.id,
-                    JournalEntry.state == EntryState.POSTED.value,
+                    JournalEntry.state.in_([EntryState.POSTED.value, EntryState.PAID.value]),
                     JournalEntry.company_id == company_id,
                     JournalItem.date <= as_of_date,
                 ),
@@ -1175,7 +1175,7 @@ class ReportService:
                 Account.is_bank_account.is_(True),
                 Account.is_deleted.is_(False),
                 JournalEntry.company_id == company_id,
-                JournalEntry.state == EntryState.POSTED.value,
+                JournalEntry.state.in_([EntryState.POSTED.value, EntryState.PAID.value]),
                 JournalItem.date < date_from,
             )
         )
@@ -1203,7 +1203,7 @@ class ReportService:
                 Account.company_id == company_id,
                 Account.is_deleted.is_(False),
                 JournalEntry.company_id == company_id,
-                JournalEntry.state == EntryState.POSTED.value,
+                JournalEntry.state.in_([EntryState.POSTED.value, EntryState.PAID.value]),
                 JournalItem.date >= date_from,
                 JournalItem.date <= date_to,
             )
@@ -1357,7 +1357,7 @@ class ReportService:
                 Account.is_deleted.is_(False),
                 Account.account_type.in_(target_types),
                 JournalEntry.company_id == company_id,
-                JournalEntry.state == EntryState.POSTED.value,
+                JournalEntry.state.in_([EntryState.POSTED.value, EntryState.PAID.value]),
                 JournalItem.date >= date_from,
                 JournalItem.date <= date_to,
             )

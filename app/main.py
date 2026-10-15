@@ -68,6 +68,18 @@ async def lifespan(app: FastAPI):
                         "ALTER TABLE anr_payments ADD COLUMN IF NOT EXISTS cancellation_fee NUMERIC(20, 3) NOT NULL DEFAULT 0.000;"
                     )
                 )
+                await conn.execute(
+                    sa.text(
+                        """
+                        UPDATE journal_entries
+                        SET state = 'paid'
+                        WHERE id IN (
+                            SELECT journal_entry_id FROM invoices
+                            WHERE state = 'paid' AND journal_entry_id IS NOT NULL
+                        ) AND state != 'paid';
+                        """
+                    )
+                )
             except Exception as col_exc:
                 logger.debug("ensure_anr_payments_refund_columns_note", error=str(col_exc))
         logger.info("database_schema_initialized")

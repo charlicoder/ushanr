@@ -32,6 +32,7 @@ from app.models.mixins import CompanyMixin, TimestampMixin, UUIDPrimaryKeyMixin
 class EntryState(str, Enum):
     DRAFT = "draft"
     POSTED = "posted"
+    PAID = "paid"
     CANCELLED = "cancelled"
 
 
@@ -112,7 +113,7 @@ class JournalEntry(UUIDPrimaryKeyMixin, CompanyMixin, TimestampMixin, Base):
 
     @property
     def is_posted(self) -> bool:
-        return self.state == EntryState.POSTED.value
+        return self.state in (EntryState.POSTED.value, EntryState.PAID.value)
 
     @property
     def is_editable(self) -> bool:

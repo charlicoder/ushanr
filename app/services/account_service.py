@@ -391,7 +391,7 @@ class AccountService:
             .join(JournalEntry, JournalItem.entry_id == JournalEntry.id)
             .where(
                 JournalItem.account_id == account_id,
-                JournalEntry.state == EntryState.POSTED.value,
+                JournalEntry.state.in_([EntryState.POSTED.value, EntryState.PAID.value]),
                 JournalEntry.company_id == company_id,
             )
         )
@@ -470,7 +470,7 @@ class AccountService:
                 JournalEntry,
                 and_(
                     JournalItem.entry_id == JournalEntry.id,
-                    JournalEntry.state == EntryState.POSTED.value,
+                    JournalEntry.state.in_([EntryState.POSTED.value, EntryState.PAID.value]),
                     JournalEntry.company_id == company_id,
                 ),
                 isouter=True,

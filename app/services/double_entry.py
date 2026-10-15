@@ -359,7 +359,7 @@ class DoubleEntryEngine:
         """
         from datetime import datetime, timezone
 
-        if entry.state == EntryState.POSTED.value:
+        if entry.state in (EntryState.POSTED.value, EntryState.PAID.value):
             raise EntryAlreadyPostedError(
                 f"Journal entry {entry.name or entry.id} is already posted."
             )
@@ -464,9 +464,9 @@ class DoubleEntryEngine:
         Used for correcting posted entries — the original entry is
         NOT modified (immutability preserved).
         """
-        if entry.state != EntryState.POSTED.value:
+        if entry.state not in (EntryState.POSTED.value, EntryState.PAID.value):
             raise EntryAlreadyPostedError(
-                f"Can only reverse POSTED entries. Entry {entry.id} is {entry.state}."
+                f"Can only reverse POSTED or PAID entries. Entry {entry.id} is {entry.state}."
             )
 
         items_result = await session.execute(

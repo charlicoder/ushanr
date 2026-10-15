@@ -221,6 +221,7 @@ async def test_post_invoice_preserves_paid_state():
     # State should remain PAID, not reset to POSTED
     assert posted_inv.state == InvoiceState.PAID.value
     assert posted_inv.journal_entry_id == mock_je.id
+    assert mock_je.state == "paid"
 
 
 @pytest.mark.asyncio
@@ -397,5 +398,112 @@ async def test_endpoint_create_invoice_from_source_pending_booking_disallowed():
         await create_invoice_from_source(body=req, session=session)
     assert exc_info.value.status_code == 400
     assert "disallowed for unpaid/pending" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_mark_invoice_paid_updates_journal_entry_state_to_paid():
+    """Verify mark_invoice_paid updates invoice and linked journal entry state to paid."""
+    from app.models.journal_entry import EntryState, JournalEntry
+
+    mock_je_id = uuid4()
+    mock_je = JournalEntry(
+        id=mock_je_id,
+        company_id=COMPANY_ID,
+        journal_id=JOURNAL_ID,
+        name="INV/2026/10/00001",
+        entry_date=date.today(),
+        state=EntryState.POSTED.value,
+    )
+    inv = Invoice(
+        id=uuid4(),
+        company_id=COMPANY_ID,
+        partner_id=PARTNER_ID,
+        journal_id=JOURNAL_ID,
+        invoice_type=InvoiceType.INVOICE.value,
+        invoice_date=date.today(),
+        state=InvoiceState.POSTED.value,
+        amount_untaxed=50.0,
+        amount_tax=0.0,
+        amount_total=50.0,
+        amount_paid=0.0,
+        amount_residual=50.0,
+        currency_code="KWD",
+        journal_entry_id=mock_je_id,
+    )
+
+    session = AsyncMock()
+    session.get = AsyncMock(return_value=mock_je)
+    svc = InvoiceService(session)
+    svc._fetch_invoice = AsyncMock(return_value=inv)
+
+    paid_inv = await svc.mark_invoice_paid(inv.id, amount_paid=Decimal("50.000"))
+
+    assert paid_inv.state == InvoiceState.PAID.value
+    assert mock_je.state == EntryState.PAID.value
+
+
+@pytest.mark.asyncio
+async def test_allocate_payment_updates_journal_entry_state_to_paid():
+    """Verify PaymentService.allocate_payment sets invoice and linked journal entry to paid."""
+    from app.models.journal_entry import EntryState, JournalEntry
+    from app.models.payment import Payment, PaymentType, PaymentState
+    from app.services.payment_service import PaymentService
+
+    mock_je_id = uuid4()
+    mock_je = JournalEntry(
+        id=mock_je_id,
+        company_id=COMPANY_ID,
+        journal_id=JOURNAL_ID,
+        name="INV/2026/10/00001",
+        entry_date=date.today(),
+        state=EntryState.POSTED.value,
+    )
+    inv = Invoice(
+        id=uuid4(),
+        company_id=COMPANY_ID,
+        partner_id=PARTNER_ID,
+        journal_id=JOURNAL_ID,
+        invoice_type=InvoiceType.INVOICE.value,
+        invoice_date=date.today(),
+        state=InvoiceState.POSTED.value,
+        amount_untaxed=50.0,
+        amount_tax=0.0,
+        amount_total=50.0,
+        amount_paid=0.0,
+        amount_residual=50.0,
+        currency_code="KWD",
+        journal_entry_id=mock_je_id,
+    )
+    payment = Payment(
+        id=uuid4(),
+        company_id=COMPANY_ID,
+        partner_id=PARTNER_ID,
+        journal_id=JOURNAL_ID,
+        payment_type=PaymentType.INBOUND.value,
+        payment_date=date.today(),
+        state=PaymentState.POSTED.value,
+        amount=50.0,
+        amount_residual=50.0,
+        currency_code="KWD",
+    )
+
+    session = AsyncMock()
+    session.get = AsyncMock(return_value=mock_je)
+    mock_res = MagicMock()
+    mock_res.scalar_one_or_none.return_value = inv
+    session.execute.return_value = mock_res
+
+    svc = PaymentService(session)
+    svc._fetch_payment = AsyncMock(return_value=payment)
+
+    alloc = await svc.allocate_payment(
+        payment_id=payment.id,
+        invoice_id=inv.id,
+        amount=Decimal("50.000"),
+    )
+
+    assert inv.state == InvoiceState.PAID.value
+    assert mock_je.state == EntryState.PAID.value
+
 
 
