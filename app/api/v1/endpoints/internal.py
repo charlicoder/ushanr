@@ -345,18 +345,29 @@ async def create_invoice_from_source(
         )
     )
 
-    # Idempotency check — do not create duplicate invoices
-    existing = await session.execute(
-        select(Invoice).where(
-            Invoice.source_document_type == body.source_document_type,
-            Invoice.source_document_id == body.source_document_id,
-            Invoice.is_deleted.is_(False),
+    # Idempotency check — do not create duplicate invoices.
+    # Match by source_document_id OR source_document_ref OR reference.
+    id_conds = []
+    if body.source_document_id:
+        id_conds.append(Invoice.source_document_id == str(body.source_document_id))
+    if body.source_document_ref:
+        id_conds.append(Invoice.source_document_ref == str(body.source_document_ref))
+        id_conds.append(Invoice.reference == str(body.source_document_ref))
+
+    existing_invoice = None
+    if id_conds:
+        existing = await session.execute(
+            select(Invoice).where(
+                Invoice.source_document_type == body.source_document_type,
+                or_(*id_conds),
+                Invoice.is_deleted.is_(False),
+            ).order_by(Invoice.created_at.desc())
         )
-    )
-    existing_invoice = existing.scalar_one_or_none()
+        existing_invoice = existing.scalars().first()
+
     if existing_invoice is not None:
         # If existing invoice exists and caller indicates payment has completed, update to PAID
-        if not is_explicitly_unpaid and is_paid_signal and existing_invoice.state != InvoiceState.PAID.value:
+        if is_paid_signal and existing_invoice.state != InvoiceState.PAID.value:
             paid_val = float(body.amount_paid if body.amount_paid is not None and body.amount_paid > Decimal("0") else existing_invoice.amount_total)
             existing_invoice.amount_paid = paid_val
             existing_invoice.amount_residual = max(0.0, float(Decimal(str(existing_invoice.amount_total)) - Decimal(str(paid_val))))
@@ -372,12 +383,30 @@ async def create_invoice_from_source(
             invoice_id=str(existing_invoice.id),
             source_type=body.source_document_type,
             source_id=body.source_document_id,
+            source_ref=body.source_document_ref,
         )
         return InvoiceCreatedResponse(
             invoice_id=existing_invoice.id,
             invoice_name=existing_invoice.name,
             state=existing_invoice.state,
             amount_total=Decimal(str(existing_invoice.amount_total)),
+        )
+
+    # In our system invoices are only created after payment (payment_status=success/paid).
+    # Disallow creating invoices for unpaid or pending source documents.
+    if is_explicitly_unpaid or not is_paid_signal:
+        logger.info(
+            "internal_invoice_creation_skipped_unpaid",
+            source_type=body.source_document_type,
+            source_id=body.source_document_id,
+            source_ref=body.source_document_ref,
+            payment_status=body.payment_status,
+            is_paid=body.is_paid,
+            message="Invoice creation skipped because source document is unpaid/pending. Invoices are only created when payment_status=success.",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invoice creation is disallowed for unpaid/pending source documents. Invoices are only created when payment_status=success.",
         )
 
     # Ensure company exists, fallback to first active company if needed
@@ -509,10 +538,11 @@ async def create_invoice_from_source(
 
 
 class MarkInvoicePaidRequest(BaseModel):
-    invoice_id: UUID | None = None
+    invoice_id: UUID | str | None = None
     invoice_name: str | None = None
     source_document_type: str | None = None
     source_document_id: str | None = None
+    source_document_ref: str | None = None
     amount_paid: Decimal | None = None
     payment_id: UUID | str | None = None
 
@@ -527,21 +557,35 @@ async def mark_invoice_paid_endpoint(
     _: None = InternalAuth,
     session: AsyncSession = Depends(get_db),
 ) -> InvoiceCreatedResponse:
-    stmt = select(Invoice).where(Invoice.is_deleted.is_(False))
-    if body.invoice_id:
-        stmt = stmt.where(Invoice.id == body.invoice_id)
-    elif body.invoice_name:
-        stmt = stmt.where(Invoice.name == body.invoice_name)
-    elif body.source_document_type and body.source_document_id:
-        stmt = stmt.where(
-            Invoice.source_document_type == body.source_document_type,
-            Invoice.source_document_id == body.source_document_id,
+    inv = None
+    parsed_id = _safe_uuid(body.invoice_id) if body.invoice_id else None
+    if parsed_id:
+        res = await session.execute(select(Invoice).where(Invoice.id == parsed_id, Invoice.is_deleted.is_(False)))
+        inv = res.scalar_one_or_none()
+
+    if not inv and body.invoice_name:
+        res = await session.execute(select(Invoice).where(Invoice.name == body.invoice_name, Invoice.is_deleted.is_(False)))
+        inv = res.scalar_one_or_none()
+
+    if not inv and body.source_document_type and (body.source_document_id or body.source_document_ref):
+        id_conds = []
+        if body.source_document_id:
+            id_conds.append(Invoice.source_document_id == str(body.source_document_id))
+        if body.source_document_ref:
+            id_conds.append(Invoice.source_document_ref == str(body.source_document_ref))
+            id_conds.append(Invoice.reference == str(body.source_document_ref))
+        res = await session.execute(
+            select(Invoice).where(
+                Invoice.source_document_type == body.source_document_type,
+                or_(*id_conds),
+                Invoice.is_deleted.is_(False),
+            ).order_by(Invoice.created_at.desc())
         )
-    else:
+        inv = res.scalars().first()
+
+    if not inv and not body.invoice_id and not body.invoice_name and not (body.source_document_type and (body.source_document_id or body.source_document_ref)):
         raise HTTPException(status_code=400, detail="Missing invoice identifier.")
 
-    res = await session.execute(stmt)
-    inv = res.scalar_one_or_none()
     if not inv:
         raise HTTPException(status_code=404, detail="Invoice not found.")
 

@@ -276,8 +276,13 @@ async def test_endpoint_create_invoice_from_source_with_gateway_payment_id():
 
     def mock_exec(stmt):
         m = MagicMock()
-        # if existing invoice check, return None
-        m.scalar_one_or_none.return_value = None
+        stmt_str = str(stmt)
+        if "companies" in stmt_str:
+            m.scalar_one_or_none.return_value = mock_comp
+        elif "journals" in stmt_str:
+            m.scalar_one_or_none.return_value = mock_jour
+        else:
+            m.scalar_one_or_none.return_value = None
         m.scalars.return_value.all.return_value = []
         m.scalars.return_value.first.return_value = None
         return m
@@ -357,13 +362,12 @@ async def test_post_invoice_unpaid_booking_sets_posted_state():
 
 
 @pytest.mark.asyncio
-async def test_endpoint_create_invoice_from_source_pending_booking_sets_posted_state():
+async def test_endpoint_create_invoice_from_source_pending_booking_disallowed():
     """Verify that calling create_invoice_from_source for a booking with payment_status='pending'
-    and is_paid=False returns an invoice with state='posted'."""
-    session = AsyncMock()
+    and is_paid=False raises 400 Bad Request, because invoices are only created after payment."""
+    from fastapi import HTTPException
 
-    mock_comp = Company(id=COMPANY_ID, name="USHSPA", currency_code="KWD", is_active=True)
-    mock_jour = Journal(id=JOURNAL_ID, company_id=COMPANY_ID, name="Sales", code="INV", is_active=True)
+    session = AsyncMock()
 
     def mock_exec(stmt):
         m = MagicMock()
@@ -389,25 +393,9 @@ async def test_endpoint_create_invoice_from_source_pending_booking_sets_posted_s
         payment_id=None,
     )
 
-    mock_invoice = MagicMock()
-    mock_invoice.id = uuid4()
-    mock_invoice.name = "INV/2026/10/00100"
-    mock_invoice.state = "posted"
-    mock_invoice.amount_total = Decimal("40.000")
-
-    from unittest.mock import patch
-    with patch("app.api.v1.endpoints.internal.InvoiceService") as MockSvc:
-        instance = MockSvc.return_value
-        instance.create_invoice = AsyncMock(return_value=mock_invoice)
-        instance.post_invoice = AsyncMock(return_value=mock_invoice)
-
-        resp = await create_invoice_from_source(body=req, session=session)
-        assert resp.invoice_name == "INV/2026/10/00100"
-        assert resp.state == "posted"
-        # Verify CreateInvoiceData passed to create_invoice had is_paid=False and amount_paid=0
-        call_args = instance.create_invoice.call_args[0][0]
-        assert call_args.is_paid is False
-        assert call_args.amount_paid == Decimal("0")
-        assert call_args.payment_id is None
+    with pytest.raises(HTTPException) as exc_info:
+        await create_invoice_from_source(body=req, session=session)
+    assert exc_info.value.status_code == 400
+    assert "disallowed for unpaid/pending" in exc_info.value.detail
 
 
