@@ -87,12 +87,13 @@ InternalAuth = Depends(_verify_internal_key)
 
 class EnsurePartnerRequest(BaseModel):
     """Idempotently get or create a Partner by external_id."""
-    company_id: UUID
+    company_id: UUID | str | None = Field(default=None, description="Company UUID")
     external_id: str = Field(..., description="Customer UUID from ushauth/ushbooknpay")
-    name: str = Field(default="", description="Customer display name")
-    phone: str = Field(default="")
-    email: str = Field(default="")
-    currency_code: str = Field(default="KWD")
+    name: str | None = Field(default="", description="Customer display name")
+    phone: str | None = Field(default="", description="Customer phone")
+    email: str | None = Field(default="", description="Customer email")
+    currency_code: str | None = Field(default="KWD", description="Currency code")
+    partner_type: str | None = Field(default="customer", description="Partner type")
 
 
 class EnsurePartnerResponse(BaseModel):
@@ -101,21 +102,21 @@ class EnsurePartnerResponse(BaseModel):
 
 
 class InvoiceLineIn(BaseModel):
-    account_id: UUID
+    account_id: UUID | str
     name: str
     quantity: Decimal = Decimal("1")
     unit_price: Decimal
     discount: Decimal = Decimal("0")
-    tax_id: UUID | None = None
-    analytic_account_id: UUID | None = None
+    tax_id: UUID | str | None = None
+    analytic_account_id: UUID | str | None = None
     product_id: str | None = None
 
 
 class CreateInvoiceFromSourceRequest(BaseModel):
     """Create + auto-post an invoice from a source document."""
-    company_id: UUID
-    partner_id: UUID
-    journal_id: UUID
+    company_id: UUID | str | None = Field(default=None)
+    partner_id: UUID | str
+    journal_id: UUID | str | None = Field(default=None)
     invoice_date: date
     source_document_type: str  # booking | shop_order | gift_voucher | gift_voucher_purchase
     source_document_id: str    # UUID string of the originating entity
@@ -171,28 +172,40 @@ def _safe_uuid(val: Any) -> UUID | None:
 
 async def _ensure_partner(
     session: AsyncSession,
-    company_id: UUID,
+    company_id: UUID | str | None,
     external_id: str,
-    name: str,
-    phone: str,
-    email: str,
-    currency_code: str,
+    name: str | None,
+    phone: str | None,
+    email: str | None,
+    currency_code: str | None,
 ) -> tuple[Partner, bool]:
     """
     Get or create a Partner by external_id within a company.
     Returns (partner, created_bool).
     """
+    if not company_id or not isinstance(company_id, UUID):
+        company_id = _safe_uuid(company_id)
+
     # Ensure company exists, fallback to first active company if needed
-    comp_exists = await session.execute(
-        select(Company).where(Company.id == company_id, Company.is_active.is_(True))
-    )
-    if comp_exists.scalar_one_or_none() is None:
+    comp_exists = None
+    if company_id:
+        comp_res = await session.execute(
+            select(Company).where(Company.id == company_id, Company.is_active.is_(True))
+        )
+        comp_exists = comp_res.scalar_one_or_none()
+
+    if comp_exists is None:
         first_comp = await session.execute(
             select(Company).where(Company.is_active.is_(True)).order_by(Company.created_at.asc()).limit(1)
         )
         comp = first_comp.scalar_one_or_none()
         if comp is not None:
             company_id = comp.id
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="No active company configured in ushanr.",
+            )
 
     result = await session.execute(
         select(Partner).where(
@@ -205,18 +218,23 @@ async def _ensure_partner(
     if partner is not None:
         return partner, False
 
+    clean_name = (name or "").strip() or str(external_id)
+    clean_phone = (phone or "").strip() or None
+    clean_email = (email or "").strip() or None
+    clean_currency = (currency_code or "").strip() or "KWD"
+
     partner = Partner(
         company_id=company_id,
-        external_id=external_id,
-        name=name or external_id,
-        display_name=name or external_id,
+        external_id=str(external_id),
+        name=clean_name,
+        display_name=clean_name,
         partner_type=PartnerType.CUSTOMER.value,
         is_customer=True,
         is_vendor=False,
         is_company=False,
-        phone=phone or None,
-        email=email or None,
-        currency_code=currency_code,
+        phone=clean_phone,
+        email=clean_email,
+        currency_code=clean_currency,
         is_active=True,
     )
     session.add(partner)
@@ -363,24 +381,35 @@ async def create_invoice_from_source(
         )
 
     # Ensure company exists, fallback to first active company if needed
-    effective_company_id = body.company_id
-    comp_exists = await session.execute(
-        select(Company).where(Company.id == effective_company_id, Company.is_active.is_(True))
-    )
-    if comp_exists.scalar_one_or_none() is None:
+    effective_company_id = _safe_uuid(body.company_id) if body.company_id else None
+    comp_exists = None
+    if effective_company_id:
+        comp_res = await session.execute(
+            select(Company).where(Company.id == effective_company_id, Company.is_active.is_(True))
+        )
+        comp_exists = comp_res.scalar_one_or_none()
+    if comp_exists is None:
         first_comp = await session.execute(
             select(Company).where(Company.is_active.is_(True)).order_by(Company.created_at.asc()).limit(1)
         )
         comp = first_comp.scalar_one_or_none()
         if comp is not None:
             effective_company_id = comp.id
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="No active company configured in ushanr.",
+            )
 
     # Ensure journal exists, fallback to first active sale journal if needed
-    effective_journal_id = body.journal_id
-    jour_exists = await session.execute(
-        select(Journal).where(Journal.id == effective_journal_id, Journal.is_active.is_(True))
-    )
-    if jour_exists.scalar_one_or_none() is None:
+    effective_journal_id = _safe_uuid(body.journal_id) if body.journal_id else None
+    jour_exists = None
+    if effective_journal_id:
+        jour_res = await session.execute(
+            select(Journal).where(Journal.id == effective_journal_id, Journal.is_active.is_(True))
+        )
+        jour_exists = jour_res.scalar_one_or_none()
+    if jour_exists is None:
         first_jour = await session.execute(
             select(Journal).where(
                 Journal.company_id == effective_company_id,
@@ -392,11 +421,13 @@ async def create_invoice_from_source(
         if jour is not None:
             effective_journal_id = jour.id
 
+    effective_partner_id = _safe_uuid(body.partner_id) or body.partner_id
+
     # Ensure line accounts exist, fallback to first active revenue account if needed
     lines = []
     default_account_id = None
     for ln in body.lines:
-        target_acct_id = ln.account_id
+        target_acct_id = _safe_uuid(ln.account_id) or ln.account_id
         acct_exists = await session.execute(
             select(Account).where(Account.id == target_acct_id, Account.is_active.is_(True))
         )
@@ -422,8 +453,8 @@ async def create_invoice_from_source(
                 quantity=ln.quantity,
                 unit_price=ln.unit_price,
                 discount=ln.discount,
-                tax_id=ln.tax_id,
-                analytic_account_id=ln.analytic_account_id,
+                tax_id=_safe_uuid(ln.tax_id) if ln.tax_id else None,
+                analytic_account_id=_safe_uuid(ln.analytic_account_id) if ln.analytic_account_id else None,
                 product_id=ln.product_id,
             )
         )
@@ -440,7 +471,7 @@ async def create_invoice_from_source(
 
     data = CreateInvoiceData(
         company_id=effective_company_id,
-        partner_id=body.partner_id,
+        partner_id=effective_partner_id,
         journal_id=effective_journal_id,
         invoice_type=InvoiceType.INVOICE.value,
         invoice_date=body.invoice_date,
