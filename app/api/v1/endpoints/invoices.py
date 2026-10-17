@@ -52,13 +52,13 @@ def _line_to_dict(line: InvoiceLine) -> dict:
         "tax_id": str(line.tax_id) if line.tax_id else None,
         "name": line.name,
         "description": line.description,
-        "quantity": float(line.quantity),
-        "unit_price": float(line.unit_price),
-        "discount": float(line.discount),
-        "tax_rate": float(line.tax_rate),
-        "subtotal": float(line.subtotal),
-        "tax_amount": float(line.tax_amount),
-        "total": float(line.total),
+        "quantity": float(line.quantity or 0),
+        "unit_price": float(line.unit_price or 0),
+        "discount": float(line.discount or 0),
+        "tax_rate": float(line.tax_rate or 0),
+        "subtotal": float(line.subtotal or 0),
+        "tax_amount": float(line.tax_amount or 0),
+        "total": float(line.total or 0),
         "product_id": line.product_id,
         "product_code": line.product_code,
         "sequence": line.sequence,
@@ -108,8 +108,8 @@ def _invoice_to_dict(inv: Invoice) -> dict:
         "source_document_id": inv.source_document_id,
         "source_document_ref": inv.source_document_ref,
         "notes": inv.notes,
-        "created_at": inv.created_at.isoformat(),
-        "updated_at": inv.updated_at.isoformat(),
+        "created_at": inv.created_at.isoformat() if inv.created_at else None,
+        "updated_at": inv.updated_at.isoformat() if inv.updated_at else None,
         "lines": [_line_to_dict(l) for l in (inv.lines or [])],
     }
 
@@ -572,9 +572,14 @@ async def cancel_invoice(
         raise HTTPException(status_code=404, detail="Invoice not found")
     if inv.state == InvoiceState.CANCELLED.value:
         raise HTTPException(status_code=409, detail="Invoice already cancelled")
+    if inv.state in (InvoiceState.PAID.value, InvoiceState.PARTIAL.value):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Paid invoices cannot be cancelled directly. Please issue a credit note instead.",
+        )
 
-    # If posted or paid, create reversal journal entry
-    if inv.state in (InvoiceState.POSTED.value, InvoiceState.PAID.value) and inv.journal_entry_id:
+    # If posted, create reversal journal entry
+    if inv.state == InvoiceState.POSTED.value and inv.journal_entry_id:
         from sqlalchemy.orm import selectinload as sl
         entry_result = await db.execute(
             select(JournalEntry)
@@ -603,7 +608,7 @@ async def cancel_invoice(
 @router.post(
     "/{invoice_id}/credit-note/",
     status_code=status.HTTP_201_CREATED,
-    summary="Create credit note from posted invoice",
+    summary="Create credit note from posted or paid invoice",
 )
 async def create_credit_note(
     invoice_id: UUID,
@@ -618,8 +623,16 @@ async def create_credit_note(
     inv = result.scalar_one_or_none()
     if not inv:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    if inv.state != InvoiceState.POSTED.value:
-        raise HTTPException(status_code=422, detail="Can only create credit note from posted invoice")
+    valid_states = (
+        InvoiceState.POSTED.value,
+        InvoiceState.PAID.value,
+        InvoiceState.PARTIAL.value,
+    )
+    if inv.state not in valid_states:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Can only create credit note from posted, paid, or partial invoice (current state: {inv.state})",
+        )
 
     cn_type = (
         InvoiceType.CREDIT_NOTE.value
@@ -675,6 +688,15 @@ async def create_credit_note(
         db.add(cn_line)
 
     await db.flush()
+
+    # Automatically post credit note unless explicitly requested as draft
+    auto_post = (payload or {}).get("auto_post", True)
+    if auto_post:
+        try:
+            posted_by = str((payload or {}).get("created_by") or (payload or {}).get("posted_by") or "system")
+            await svc.post_invoice(credit_note.id, posted_by=posted_by)
+        except Exception as exc:
+            logger.warning("credit_note_auto_post_skipped", error=str(exc), credit_note_id=str(credit_note.id))
 
     result2 = await db.execute(
         select(Invoice).where(Invoice.id == credit_note.id).options(selectinload(Invoice.lines))

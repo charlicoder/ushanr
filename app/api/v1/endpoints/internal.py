@@ -153,6 +153,7 @@ class CreditNoteRequest(BaseModel):
     refund_number: str | None = None
     branch_id: UUID | None = None
     processed_by: str | None = None
+    record_refund_payment: bool = False  # When True, also post outbound refund payment
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -675,6 +676,97 @@ async def create_credit_note(
     )
     existing_cn_invoice = existing_cn.scalar_one_or_none()
     if existing_cn_invoice is not None:
+        if body.record_refund_payment and existing_cn_invoice.state != InvoiceState.PAID.value:
+            credit_note = existing_cn_invoice
+            eff_refund_amount = Decimal(str(body.refund_amount or credit_note.amount_total))
+            fee = Decimal(str(body.cancellation_fee or "0.000"))
+            cn_date = body.cancellation_date or local_today()
+            target_company_id = original.company_id or body.company_id
+
+            from app.models.payment import PaymentType
+            from app.services.payment_service import CreatePaymentData, PaymentService
+
+            pmt_journal_id = None
+            ref_method_str = str(body.refund_method or "").strip().lower()
+            if ref_method_str == "cash":
+                j_stmt = select(Journal.id).where(
+                    Journal.company_id == target_company_id,
+                    Journal.journal_type == JournalType.CASH.value,
+                    Journal.is_active.is_(True),
+                ).limit(1)
+                pmt_journal_id = (await session.execute(j_stmt)).scalar_one_or_none()
+            else:
+                if "knet" in ref_method_str:
+                    knet_stmt = select(Journal.id).where(
+                        Journal.company_id == target_company_id,
+                        Journal.journal_type == JournalType.BANK.value,
+                        Journal.is_active.is_(True),
+                        or_(
+                            Journal.code.ilike("%knet%"),
+                            Journal.name.ilike("%knet%"),
+                        ),
+                    ).limit(1)
+                    pmt_journal_id = (await session.execute(knet_stmt)).scalar_one_or_none()
+
+                if not pmt_journal_id:
+                    bank_stmt = select(Journal.id).where(
+                        Journal.company_id == target_company_id,
+                        Journal.journal_type == JournalType.BANK.value,
+                        Journal.is_active.is_(True),
+                    ).limit(1)
+                    pmt_journal_id = (await session.execute(bank_stmt)).scalar_one_or_none()
+
+            if not pmt_journal_id:
+                any_bank_cash = select(Journal.id).where(
+                    Journal.company_id == target_company_id,
+                    Journal.journal_type.in_([JournalType.BANK.value, JournalType.CASH.value]),
+                    Journal.is_active.is_(True),
+                ).limit(1)
+                pmt_journal_id = (await session.execute(any_bank_cash)).scalar_one_or_none()
+
+            if not pmt_journal_id:
+                pmt_journal_id = credit_note.journal_id
+
+            pmt_svc = PaymentService(session)
+            pmt_data = CreatePaymentData(
+                company_id=original.company_id,
+                journal_id=pmt_journal_id,
+                payment_type=PaymentType.OUTBOUND.value,
+                amount=eff_refund_amount,
+                payment_date=cn_date,
+                currency_code=original.currency_code,
+                partner_id=original.partner_id,
+                partner_name=getattr(original, "partner_name", None),
+                payment_method=body.refund_method or "cash",
+                reference=body.refund_number or f"REF-{credit_note.name or original.name}",
+                notes=body.notes or f"Customer refund for {body.source_document_type} {body.source_document_id}",
+                created_by=body.processed_by or "ushnotice",
+                is_refund=True,
+                refund_number=body.refund_number,
+                cancellation_fee=fee,
+            )
+            outbound_pmt = await pmt_svc.create_payment(pmt_data)
+            outbound_pmt = await pmt_svc.post_payment(outbound_pmt.id, posted_by=body.processed_by or "ushnotice")
+            await pmt_svc.allocate_payment(
+                payment_id=outbound_pmt.id,
+                invoice_id=credit_note.id,
+                amount=eff_refund_amount,
+                allocation_date=cn_date,
+            )
+            await session.commit()
+            await session.refresh(credit_note)
+            logger.info(
+                "internal_credit_note_paid_on_refund_process",
+                credit_note_id=str(credit_note.id),
+                payment_id=str(outbound_pmt.id),
+            )
+            return InvoiceCreatedResponse(
+                invoice_id=credit_note.id,
+                invoice_name=credit_note.name,
+                state=credit_note.state,
+                amount_total=Decimal(str(credit_note.amount_total)),
+            )
+
         logger.info(
             "internal_credit_note_already_exists",
             credit_note_id=str(existing_cn_invoice.id),
@@ -685,6 +777,7 @@ async def create_credit_note(
             state=existing_cn_invoice.state,
             amount_total=Decimal(str(existing_cn_invoice.amount_total)),
         )
+
 
     orig_total = Decimal(str(original.amount_total))
     fee = Decimal(str(body.cancellation_fee or "0.000"))
@@ -815,8 +908,11 @@ async def create_credit_note(
     credit_note = await svc.create_invoice(cn_data)
     credit_note = await svc.post_invoice(credit_note.id, posted_by=body.processed_by or "ushnotice")
 
-    # If money was refunded to customer, record and allocate an OUTBOUND payment
-    if eff_refund_amount > Decimal("0.000") and (original.state in (InvoiceState.PAID.value, InvoiceState.PARTIAL.value) or body.refund_amount is not None):
+    # If money was refunded to customer AND caller requested payment recording,
+    # record and allocate an OUTBOUND payment.
+    # On cancellation (record_refund_payment=false): only the credit note is created.
+    # On refund completion (record_refund_payment=true): the outbound payment is posted.
+    if body.record_refund_payment and eff_refund_amount > Decimal("0.000") and (original.state in (InvoiceState.PAID.value, InvoiceState.PARTIAL.value) or body.refund_amount is not None):
         from app.models.payment import PaymentType
         from app.services.payment_service import CreatePaymentData, PaymentService
 

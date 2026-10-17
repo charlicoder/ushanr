@@ -212,6 +212,7 @@ async def test_create_credit_note_with_cancellation_fee():
             refund_amount=Decimal("50.000"),
             refund_method="cash",
             refund_number="REF/2026/10/000002",
+            record_refund_payment=True,
         )
 
         resp = await create_credit_note(
@@ -236,3 +237,93 @@ async def test_create_credit_note_with_cancellation_fee():
 
         # Verify payment was allocated against the credit note
         mock_alloc.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_endpoint_create_credit_note_for_paid_invoice_succeeds():
+    """Verify that POST /invoices/{id}/credit-note/ accepts paid invoices."""
+    from app.api.v1.endpoints.invoices import create_credit_note as endpoint_create_credit_note
+    from fastapi import HTTPException
+
+    company_id = uuid.uuid4()
+    inv_id = uuid.uuid4()
+    line_id = uuid.uuid4()
+
+    inv = Invoice(
+        id=inv_id,
+        name="INV/2026/10/00001",
+        company_id=company_id,
+        journal_id=uuid.uuid4(),
+        partner_id=uuid.uuid4(),
+        invoice_type=InvoiceType.INVOICE.value,
+        state=InvoiceState.PAID.value,
+        invoice_date=date.today(),
+        currency_code="KWD",
+        amount_untaxed=60.0,
+        amount_tax=0.0,
+        amount_total=60.0,
+        amount_paid=60.0,
+        amount_residual=0.0,
+        is_deleted=False,
+    )
+    line = InvoiceLine(
+        id=line_id,
+        company_id=company_id,
+        invoice_id=inv_id,
+        account_id=uuid.uuid4(),
+        name="Spa Service",
+        quantity=1,
+        unit_price=60.0,
+        subtotal=60.0,
+        tax_amount=0.0,
+        total=60.0,
+    )
+    inv.lines = [line]
+
+    mock_db = AsyncMock()
+    mock_res = MagicMock()
+    mock_res.scalar_one_or_none.return_value = inv
+    mock_res.scalar_one.return_value = inv
+    mock_db.execute.return_value = mock_res
+
+    with patch("app.services.invoice_service.InvoiceService._generate_invoice_name", return_value="CN/2026/10/00001"), \
+         patch("app.services.invoice_service.InvoiceService.post_invoice", new_callable=AsyncMock):
+        resp = await endpoint_create_credit_note(
+            invoice_id=inv_id,
+            payload={"reason": "Customer cancelled booking"},
+            db=mock_db,
+        )
+
+    assert resp["success"] is True
+    # Original invoice was NOT modified
+    assert inv.state == InvoiceState.PAID.value
+
+
+@pytest.mark.asyncio
+async def test_endpoint_cancel_invoice_for_paid_invoice_raises_422():
+    """Verify that POST /invoices/{id}/cancel/ rejects paid invoices."""
+    from app.api.v1.endpoints.invoices import cancel_invoice as endpoint_cancel_invoice
+    from fastapi import HTTPException
+
+    inv_id = uuid.uuid4()
+    inv = Invoice(
+        id=inv_id,
+        name="INV/2026/10/00001",
+        state=InvoiceState.PAID.value,
+        is_deleted=False,
+    )
+
+    mock_db = AsyncMock()
+    mock_res = MagicMock()
+    mock_res.scalar_one_or_none.return_value = inv
+    mock_db.execute.return_value = mock_res
+
+    with pytest.raises(HTTPException) as exc_info:
+        await endpoint_cancel_invoice(
+            invoice_id=inv_id,
+            payload={"cancelled_by": "staff-1"},
+            db=mock_db,
+        )
+
+    assert exc_info.value.status_code == 422
+    assert "Paid invoices cannot be cancelled directly" in exc_info.value.detail
