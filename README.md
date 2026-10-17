@@ -254,7 +254,9 @@ pg_restore -h localhost -p 5432 \
   ushauth_prod_db.dump
 
 
-python scripts/init_production_data.py --company-name "USHSPA" --year 2026
+uv run alembic upgrade head
+
+uv run python scripts/init_production_data.py --company-name "USHSPA" --year 2026
 
 
 ```
