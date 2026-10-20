@@ -140,6 +140,15 @@ def create_application() -> FastAPI:
 
     @app.exception_handler(ANRBaseError)
     async def domain_exception_handler(request: Request, exc: ANRBaseError) -> JSONResponse:
+        logger.warning(
+            "domain_exception",
+            path=request.url.path,
+            method=request.method,
+            code=exc.code,
+            message=exc.message,
+            detail=exc.detail,
+            status_code=exc.status_code,
+        )
         return JSONResponse(
             status_code=exc.status_code,
             content={
@@ -165,6 +174,12 @@ def create_application() -> FastAPI:
     async def validation_exception_handler(
         request: Request, exc: RequestValidationError
     ) -> JSONResponse:
+        logger.warning(
+            "request_validation_error",
+            path=request.url.path,
+            method=request.method,
+            errors=_sanitize_for_json(exc.errors()),
+        )
         return JSONResponse(
             status_code=422,
             content={

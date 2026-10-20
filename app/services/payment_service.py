@@ -39,7 +39,7 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from uuid import UUID
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import (
@@ -233,18 +233,55 @@ class PaymentService:
         return account
 
     async def _fetch_ar_ap_account(
-        self, company_id: UUID, payment_type: str, is_refund: bool = False
+        self,
+        company_id: UUID,
+        payment_type: str,
+        is_refund: bool = False,
+        journal_id: UUID | None = None,
     ) -> Account:
         """
         Resolve AR (inbound or customer refund) or AP (outbound vendor) account for the company.
 
-        Uses first reconcilable ASSET (AR) or LIABILITY (AP) account found.
+        Resolution strategy:
+        1. If journal_id is provided and journal has default_account_id, use it.
+        2. Query account_type=ASSET+is_reconcilable (AR) or
+           account_type=LIABILITY+is_reconcilable (AP) for company_id.
+        3. Fallback: Query by code prefix ('1002'/'12' for AR, '2001'/'21' for AP)
+           or name containing 'receivable'/'payable' for company_id.
+        4. Fallback: Any active account with matching account_type for company_id.
+        5. Fallback: Any active reconcilable account with matching account_type across any company.
+        6. Fallback: Any active account with matching account_type across any company.
         """
         if payment_type == PaymentType.INBOUND.value or is_refund:
             acct_type = AccountType.ASSET.value
+            code_prefixes = ("1002", "12")
+            name_kw = "receivable"
+            label = "AR"
         else:
             acct_type = AccountType.LIABILITY.value
+            code_prefixes = ("2001", "21")
+            name_kw = "payable"
+            label = "AP"
 
+        # 1. Check journal.default_account_id if journal_id is provided
+        if journal_id:
+            jour_res = await self._session.execute(
+                select(Journal).where(Journal.id == journal_id)
+            )
+            jour = jour_res.scalar_one_or_none()
+            if jour and jour.default_account_id:
+                acct_res = await self._session.execute(
+                    select(Account).where(
+                        Account.id == jour.default_account_id,
+                        Account.is_active.is_(True),
+                        Account.is_deleted.is_(False),
+                    )
+                )
+                acct = acct_res.scalar_one_or_none()
+                if acct is not None:
+                    return acct
+
+        # 2. Reconcilable account in company
         result = await self._session.execute(
             select(Account).where(
                 Account.company_id == company_id,
@@ -255,12 +292,65 @@ class PaymentService:
             ).limit(1)
         )
         account = result.scalar_one_or_none()
-        if account is None:
-            raise ValidationError(
-                f"No {'AR' if (payment_type == PaymentType.INBOUND.value or is_refund) else 'AP'} account "
-                f"found for company {company_id}."
-            )
-        return account
+        if account is not None:
+            return account
+
+        # 3. Account by code prefix or name heuristic in company
+        code_conds = [Account.code.like(f"{p}%") for p in code_prefixes]
+        result = await self._session.execute(
+            select(Account).where(
+                Account.company_id == company_id,
+                Account.account_type == acct_type,
+                Account.is_active.is_(True),
+                Account.is_deleted.is_(False),
+                or_(*code_conds, Account.name.ilike(f"%{name_kw}%")),
+            ).limit(1)
+        )
+        account = result.scalar_one_or_none()
+        if account is not None:
+            return account
+
+        # 4. Any account of the correct type in company
+        result = await self._session.execute(
+            select(Account).where(
+                Account.company_id == company_id,
+                Account.account_type == acct_type,
+                Account.is_active.is_(True),
+                Account.is_deleted.is_(False),
+            ).order_by(Account.created_at.asc()).limit(1)
+        )
+        account = result.scalar_one_or_none()
+        if account is not None:
+            return account
+
+        # 5. Global fallback: reconcilable account of correct type in any company
+        result = await self._session.execute(
+            select(Account).where(
+                Account.account_type == acct_type,
+                Account.is_reconcilable.is_(True),
+                Account.is_active.is_(True),
+                Account.is_deleted.is_(False),
+            ).order_by(Account.created_at.asc()).limit(1)
+        )
+        account = result.scalar_one_or_none()
+        if account is not None:
+            return account
+
+        # 6. Global fallback: any account of correct type in any company
+        result = await self._session.execute(
+            select(Account).where(
+                Account.account_type == acct_type,
+                Account.is_active.is_(True),
+                Account.is_deleted.is_(False),
+            ).order_by(Account.created_at.asc()).limit(1)
+        )
+        account = result.scalar_one_or_none()
+        if account is not None:
+            return account
+
+        raise ValidationError(
+            f"No {label} account found for company {company_id}."
+        )
 
     # ── CRUD ──────────────────────────────────────────────────────────────────
 
@@ -355,7 +445,7 @@ class PaymentService:
             payment.company_id, journal, payment.payment_type
         )
         ar_ap_account = await self._fetch_ar_ap_account(
-            payment.company_id, payment.payment_type, is_refund=is_refund
+            payment.company_id, payment.payment_type, is_refund=is_refund, journal_id=payment.journal_id
         )
 
         if payment.payment_type == PaymentType.INBOUND.value:

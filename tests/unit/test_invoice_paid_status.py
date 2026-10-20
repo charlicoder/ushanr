@@ -16,6 +16,7 @@ import pytest
 from app.models.invoice import Invoice, InvoiceState, InvoiceType
 from app.models.company import Company
 from app.models.journal import Journal
+from app.models.journal_entry import EntryState
 from app.api.v1.endpoints.internal import (
     CreateInvoiceFromSourceRequest,
     InvoiceLineIn,
@@ -504,6 +505,82 @@ async def test_allocate_payment_updates_journal_entry_state_to_paid():
 
     assert inv.state == InvoiceState.PAID.value
     assert mock_je.state == EntryState.PAID.value
+
+
+@pytest.mark.asyncio
+async def test_create_and_post_zero_amount_loyalty_invoice():
+    """Verify that a zero-amount invoice (e.g. 100% loyalty discount or 0 charge) creates and posts as PAID."""
+    session = AsyncMock()
+    mock_result = MagicMock()
+    mock_result.scalars.return_value.all.return_value = []
+    session.execute.return_value = mock_result
+
+    svc = InvoiceService(session)
+
+    # Line with 100% discount → net zero total
+    line = InvoiceLineData(
+        account_id=ACCOUNT_ID,
+        name="Free Loyalty Reward Treatment",
+        quantity=Decimal("1"),
+        unit_price=Decimal("45.000"),
+        discount=Decimal("100"),
+    )
+    data = CreateInvoiceData(
+        company_id=COMPANY_ID,
+        partner_id=PARTNER_ID,
+        journal_id=JOURNAL_ID,
+        invoice_type=InvoiceType.INVOICE.value,
+        invoice_date=date.today(),
+        lines=[line],
+        is_paid=True,
+        payment_status="rewarded",
+    )
+
+    invoice = await svc.create_invoice(data)
+    assert invoice.amount_total == 0.0
+    assert invoice.amount_residual == 0.0
+    assert invoice.state == InvoiceState.PAID.value
+
+    # Now post invoice
+    invoice.lines = [MagicMock(account_id=ACCOUNT_ID, subtotal=0.0, name="Loyalty Reward", analytic_account_id=None)]
+    invoice.taxes = []
+
+    mock_ar = MagicMock()
+    mock_ar.id = ACCOUNT_ID
+    svc._fetch_ar_ap_account = AsyncMock(return_value=mock_ar)
+    svc._fetch_invoice = AsyncMock(return_value=invoice)
+
+    mock_je = MagicMock()
+    mock_je.id = uuid4()
+    mock_je.state = EntryState.DRAFT.value
+    svc._engine.create_and_post_entry = AsyncMock(return_value=mock_je)
+
+    posted_inv = await svc.post_invoice(invoice.id, posted_by="ushnotice")
+    assert posted_inv.state == InvoiceState.PAID.value
+    assert mock_je.state == EntryState.PAID.value
+
+
+@pytest.mark.asyncio
+async def test_fetch_ar_account_fallbacks():
+    """Verify that _fetch_ar_ap_account falls back when no account is marked is_reconcilable."""
+    session = AsyncMock()
+    mock_ar_account = MagicMock()
+    mock_ar_account.id = ACCOUNT_ID
+    mock_ar_account.name = "Accounts Receivable (Fallback)"
+
+    # First call (reconcilable query) returns None; second call (code/heuristic query) returns mock_ar_account
+    mock_res_none = MagicMock()
+    mock_res_none.scalar_one_or_none.return_value = None
+
+    mock_res_found = MagicMock()
+    mock_res_found.scalar_one_or_none.return_value = mock_ar_account
+
+    session.execute.side_effect = [mock_res_none, mock_res_found]
+
+    svc = InvoiceService(session)
+    acct = await svc._fetch_ar_ap_account(COMPANY_ID, InvoiceType.INVOICE.value)
+    assert acct.id == ACCOUNT_ID
+
 
 
 

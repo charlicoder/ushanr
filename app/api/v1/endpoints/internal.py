@@ -103,10 +103,10 @@ class EnsurePartnerResponse(BaseModel):
 
 
 class InvoiceLineIn(BaseModel):
-    account_id: UUID | str
-    name: str
+    account_id: UUID | str | None = None
+    name: str = "Service"
     quantity: Decimal = Decimal("1")
-    unit_price: Decimal
+    unit_price: Decimal = Decimal("0")
     discount: Decimal = Decimal("0")
     tax_id: UUID | str | None = None
     analytic_account_id: UUID | str | None = None
@@ -456,44 +456,88 @@ async def create_invoice_from_source(
         jour = first_jour.scalar_one_or_none()
         if jour is not None:
             effective_journal_id = jour.id
+        else:
+            first_jour_any = await session.execute(
+                select(Journal).where(
+                    Journal.journal_type == JournalType.SALE.value,
+                    Journal.is_active.is_(True),
+                ).order_by(Journal.created_at.asc()).limit(1)
+            )
+            jour_any = first_jour_any.scalar_one_or_none()
+            if jour_any is not None:
+                effective_journal_id = jour_any.id
 
     effective_partner_id = _safe_uuid(body.partner_id) or body.partner_id
+
+    # Resolve default revenue account for line items if needed
+    async def _get_default_revenue_account_id() -> UUID | None:
+        first_acct = await session.execute(
+            select(Account).where(
+                Account.company_id == effective_company_id,
+                Account.account_type == AccountType.REVENUE.value,
+                Account.is_active.is_(True),
+                Account.is_deleted.is_(False),
+            ).order_by(Account.created_at.asc()).limit(1)
+        )
+        def_acct_obj = first_acct.scalar_one_or_none()
+        if def_acct_obj:
+            return def_acct_obj.id
+        first_acct_any = await session.execute(
+            select(Account).where(
+                Account.account_type == AccountType.REVENUE.value,
+                Account.is_active.is_(True),
+                Account.is_deleted.is_(False),
+            ).order_by(Account.created_at.asc()).limit(1)
+        )
+        def_acct_any = first_acct_any.scalar_one_or_none()
+        return def_acct_any.id if def_acct_any else None
 
     # Ensure line accounts exist, fallback to first active revenue account if needed
     lines = []
     default_account_id = None
-    for ln in body.lines:
-        target_acct_id = _safe_uuid(ln.account_id) or ln.account_id
-        acct_exists = await session.execute(
-            select(Account).where(Account.id == target_acct_id, Account.is_active.is_(True))
-        )
-        if acct_exists.scalar_one_or_none() is None:
-            if default_account_id is None:
-                first_acct = await session.execute(
-                    select(Account).where(
-                        Account.company_id == effective_company_id,
-                        Account.account_type == AccountType.REVENUE.value,
-                        Account.is_active.is_(True),
-                    ).order_by(Account.created_at.asc()).limit(1)
-                )
-                def_acct_obj = first_acct.scalar_one_or_none()
-                if def_acct_obj:
-                    default_account_id = def_acct_obj.id
-            if default_account_id:
-                target_acct_id = default_account_id
-
+    input_lines = body.lines or []
+    if not input_lines:
+        default_account_id = await _get_default_revenue_account_id()
         lines.append(
             InvoiceLineData(
-                account_id=target_acct_id,
-                name=ln.name,
-                quantity=ln.quantity,
-                unit_price=ln.unit_price,
-                discount=ln.discount,
-                tax_id=_safe_uuid(ln.tax_id) if ln.tax_id else None,
-                analytic_account_id=_safe_uuid(ln.analytic_account_id) if ln.analytic_account_id else None,
-                product_id=ln.product_id,
+                account_id=default_account_id,
+                name=body.source_document_ref or body.notes or "Service",
+                quantity=Decimal("1"),
+                unit_price=Decimal("0"),
+                discount=Decimal("0"),
             )
         )
+    else:
+        for ln in input_lines:
+            target_acct_id = _safe_uuid(ln.account_id) or ln.account_id
+            acct_exists = None
+            if target_acct_id:
+                acct_res = await session.execute(
+                    select(Account).where(
+                        Account.id == target_acct_id,
+                        Account.is_active.is_(True),
+                        Account.is_deleted.is_(False),
+                    )
+                )
+                acct_exists = acct_res.scalar_one_or_none()
+            if acct_exists is None:
+                if default_account_id is None:
+                    default_account_id = await _get_default_revenue_account_id()
+                if default_account_id:
+                    target_acct_id = default_account_id
+
+            lines.append(
+                InvoiceLineData(
+                    account_id=target_acct_id,
+                    name=ln.name,
+                    quantity=ln.quantity,
+                    unit_price=ln.unit_price,
+                    discount=ln.discount,
+                    tax_id=_safe_uuid(ln.tax_id) if ln.tax_id else None,
+                    analytic_account_id=_safe_uuid(ln.analytic_account_id) if ln.analytic_account_id else None,
+                    product_id=ln.product_id,
+                )
+            )
 
     svc = InvoiceService(session)
     parsed_pmt_id = _safe_uuid(body.payment_id)
@@ -524,14 +568,28 @@ async def create_invoice_from_source(
         payment_id=effective_payment_id if not is_explicitly_unpaid else None,
         payment_reference=effective_payment_ref if not is_explicitly_unpaid else None,
     )
-    invoice = await svc.create_invoice(data)
-    invoice = await svc.post_invoice(invoice.id, posted_by="ushnotice")
-    if is_paid_signal and invoice.journal_entry_id:
-        je = await session.get(JournalEntry, invoice.journal_entry_id)
-        if je and je.state != EntryState.PAID.value:
-            je.state = EntryState.PAID.value
-            session.add(je)
-    await session.commit()
+
+    try:
+        invoice = await svc.create_invoice(data)
+        invoice = await svc.post_invoice(invoice.id, posted_by="ushnotice")
+        if is_paid_signal and invoice.journal_entry_id:
+            je = await session.get(JournalEntry, invoice.journal_entry_id)
+            if je and je.state != EntryState.PAID.value:
+                je.state = EntryState.PAID.value
+                session.add(je)
+        await session.commit()
+    except Exception as exc:
+        logger.error(
+            "internal_invoice_creation_failed",
+            error=str(exc),
+            source_type=body.source_document_type,
+            source_id=body.source_document_id,
+            partner_id=str(effective_partner_id),
+            company_id=str(effective_company_id),
+            journal_id=str(effective_journal_id),
+            exc_info=True,
+        )
+        raise
 
     logger.info(
         "internal_invoice_created",

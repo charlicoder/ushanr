@@ -292,22 +292,54 @@ class InvoiceService:
         return breakdown
 
     async def _fetch_ar_ap_account(
-        self, company_id: UUID, invoice_type: str
+        self,
+        company_id: UUID,
+        invoice_type: str,
+        journal_id: UUID | None = None,
     ) -> Account:
         """
         Fetch the default AR or AP account for a company.
 
-        Looks for account_type=ASSET+is_reconcilable (AR) or
-        account_type=LIABILITY+is_reconcilable (AP).
-
-        In production this would use journal.default_account_id;
-        here we query the first suitable account for simplicity.
+        Resolution strategy:
+        1. If journal_id is provided and journal has default_account_id, use it.
+        2. Query account_type=ASSET+is_reconcilable (AR) or
+           account_type=LIABILITY+is_reconcilable (AP) for company_id.
+        3. Fallback: Query by code prefix ('1002'/'12' for AR, '2001'/'21' for AP)
+           or name containing 'receivable'/'payable' for company_id.
+        4. Fallback: Any active account with matching account_type for company_id.
+        5. Fallback: Any active reconcilable account with matching account_type across any company.
+        6. Fallback: Any active account with matching account_type across any company.
         """
         if self._is_customer_doc(invoice_type):
             acct_type = AccountType.ASSET.value
+            code_prefixes = ("1002", "12")
+            name_kw = "receivable"
+            label = "AR"
         else:
             acct_type = AccountType.LIABILITY.value
+            code_prefixes = ("2001", "21")
+            name_kw = "payable"
+            label = "AP"
 
+        # 1. Check journal.default_account_id if journal_id is provided
+        if journal_id:
+            jour_res = await self._session.execute(
+                select(Journal).where(Journal.id == journal_id)
+            )
+            jour = jour_res.scalar_one_or_none()
+            if jour and jour.default_account_id:
+                acct_res = await self._session.execute(
+                    select(Account).where(
+                        Account.id == jour.default_account_id,
+                        Account.is_active.is_(True),
+                        Account.is_deleted.is_(False),
+                    )
+                )
+                acct = acct_res.scalar_one_or_none()
+                if acct is not None:
+                    return acct
+
+        # 2. Reconcilable account in the company
         result = await self._session.execute(
             select(Account).where(
                 Account.company_id == company_id,
@@ -318,13 +350,66 @@ class InvoiceService:
             ).limit(1)
         )
         account = result.scalar_one_or_none()
-        if account is None:
-            raise ValidationError(
-                f"No {'AR' if self._is_customer_doc(invoice_type) else 'AP'} account "
-                f"found for company {company_id}. "
-                "Please configure a reconcilable account of the correct type."
-            )
-        return account
+        if account is not None:
+            return account
+
+        # 3. Account by code prefix or name heuristic in the company
+        code_conds = [Account.code.like(f"{p}%") for p in code_prefixes]
+        result = await self._session.execute(
+            select(Account).where(
+                Account.company_id == company_id,
+                Account.account_type == acct_type,
+                Account.is_active.is_(True),
+                Account.is_deleted.is_(False),
+                or_(*code_conds, Account.name.ilike(f"%{name_kw}%")),
+            ).limit(1)
+        )
+        account = result.scalar_one_or_none()
+        if account is not None:
+            return account
+
+        # 4. Any account of the correct type in the company
+        result = await self._session.execute(
+            select(Account).where(
+                Account.company_id == company_id,
+                Account.account_type == acct_type,
+                Account.is_active.is_(True),
+                Account.is_deleted.is_(False),
+            ).order_by(Account.created_at.asc()).limit(1)
+        )
+        account = result.scalar_one_or_none()
+        if account is not None:
+            return account
+
+        # 5. Global fallback: reconcilable account of correct type in any company
+        result = await self._session.execute(
+            select(Account).where(
+                Account.account_type == acct_type,
+                Account.is_reconcilable.is_(True),
+                Account.is_active.is_(True),
+                Account.is_deleted.is_(False),
+            ).order_by(Account.created_at.asc()).limit(1)
+        )
+        account = result.scalar_one_or_none()
+        if account is not None:
+            return account
+
+        # 6. Global fallback: any account of correct type in any company
+        result = await self._session.execute(
+            select(Account).where(
+                Account.account_type == acct_type,
+                Account.is_active.is_(True),
+                Account.is_deleted.is_(False),
+            ).order_by(Account.created_at.asc()).limit(1)
+        )
+        account = result.scalar_one_or_none()
+        if account is not None:
+            return account
+
+        raise ValidationError(
+            f"No {label} account found for company {company_id}. "
+            "Please configure an account of the correct type."
+        )
 
     async def _generate_invoice_name(
         self,
@@ -381,8 +466,8 @@ class InvoiceService:
 
         amount_untaxed, amount_tax, amount_total = self._compute_totals(data.lines)
 
-        if amount_total <= ZERO:
-            raise ValidationError("Invoice total must be greater than zero.")
+        if amount_total < ZERO:
+            raise ValidationError("Invoice total cannot be negative.")
 
         # Compute due date
         computed_due = self.compute_due_date(
@@ -412,6 +497,7 @@ class InvoiceService:
 
         is_associated_payment = (
             is_paid_signal
+            or amount_total == ZERO
             or (not is_unpaid_status and data.amount_paid is not None and data.amount_paid > ZERO)
         )
 
@@ -438,7 +524,15 @@ class InvoiceService:
         init_residual = amount_total
         init_state = InvoiceState.DRAFT.value
 
-        if is_associated_payment and not is_unpaid_status:
+        if amount_total == ZERO:
+            init_paid = ZERO
+            init_residual = ZERO
+            init_state = (
+                InvoiceState.PAID.value
+                if (is_paid_signal or data.is_paid is not False)
+                else InvoiceState.DRAFT.value
+            )
+        elif is_associated_payment and not is_unpaid_status:
             if data.amount_paid is not None and data.amount_paid > ZERO:
                 init_paid = data.amount_paid
             elif matching_payment is not None:
@@ -646,7 +740,7 @@ class InvoiceService:
 
         # Fetch the controlling AR / AP account
         ar_ap_account = await self._fetch_ar_ap_account(
-            invoice.company_id, invoice.invoice_type
+            invoice.company_id, invoice.invoice_type, invoice.journal_id
         )
 
         amount_total = Decimal(str(invoice.amount_total))
@@ -681,6 +775,18 @@ class InvoiceService:
                             currency_code=invoice.currency_code,
                         )
                     )
+            if amount_total == ZERO and not any(it.credit != ZERO for it in journal_items):
+                first_acct_id = lines[0].account_id if lines else ar_ap_account.id
+                journal_items.append(
+                    JournalItemData(
+                        account_id=first_acct_id,
+                        debit=ZERO,
+                        credit=ZERO,
+                        name=lines[0].name if lines else "Zero Total Invoice",
+                        partner_id=invoice.partner_id,
+                        currency_code=invoice.currency_code,
+                    )
+                )
             # Tax payable lines
             for inv_tax in invoice.taxes:
                 tax_amount = Decimal(str(inv_tax.tax_amount))
@@ -725,6 +831,18 @@ class InvoiceService:
                             currency_code=invoice.currency_code,
                         )
                     )
+            if amount_total == ZERO and not any(it.debit != ZERO for it in journal_items):
+                first_acct_id = lines[0].account_id if lines else ar_ap_account.id
+                journal_items.append(
+                    JournalItemData(
+                        account_id=first_acct_id,
+                        debit=ZERO,
+                        credit=ZERO,
+                        name=lines[0].name if lines else "Zero Total Credit Note",
+                        partner_id=invoice.partner_id,
+                        currency_code=invoice.currency_code,
+                    )
+                )
             for inv_tax in invoice.taxes:
                 tax_amount = Decimal(str(inv_tax.tax_amount))
                 if tax_amount != ZERO:
@@ -767,6 +885,18 @@ class InvoiceService:
                             currency_code=invoice.currency_code,
                         )
                     )
+            if amount_total == ZERO and not any(it.debit != ZERO for it in journal_items):
+                first_acct_id = lines[0].account_id if lines else ar_ap_account.id
+                journal_items.append(
+                    JournalItemData(
+                        account_id=first_acct_id,
+                        debit=ZERO,
+                        credit=ZERO,
+                        name=lines[0].name if lines else "Zero Total Bill",
+                        partner_id=invoice.partner_id,
+                        currency_code=invoice.currency_code,
+                    )
+                )
             for inv_tax in invoice.taxes:
                 tax_amount = Decimal(str(inv_tax.tax_amount))
                 if tax_amount != ZERO:
@@ -808,6 +938,18 @@ class InvoiceService:
                             currency_code=invoice.currency_code,
                         )
                     )
+            if amount_total == ZERO and not any(it.credit != ZERO for it in journal_items):
+                first_acct_id = lines[0].account_id if lines else ar_ap_account.id
+                journal_items.append(
+                    JournalItemData(
+                        account_id=first_acct_id,
+                        debit=ZERO,
+                        credit=ZERO,
+                        name=lines[0].name if lines else "Zero Total Vendor Credit",
+                        partner_id=invoice.partner_id,
+                        currency_code=invoice.currency_code,
+                    )
+                )
             for inv_tax in invoice.taxes:
                 tax_amount = Decimal(str(inv_tax.tax_amount))
                 if tax_amount != ZERO:
@@ -845,7 +987,7 @@ class InvoiceService:
 
         # Link the entry back to the invoice
         invoice.journal_entry_id = journal_entry.id
-        if Decimal(str(invoice.amount_residual)) == ZERO and Decimal(str(invoice.amount_paid)) > ZERO:
+        if Decimal(str(invoice.amount_residual)) == ZERO and (Decimal(str(invoice.amount_paid)) > ZERO or amount_total == ZERO):
             invoice.state = InvoiceState.PAID.value
             journal_entry.state = EntryState.PAID.value
             self._session.add(journal_entry)
