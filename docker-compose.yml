@@ -19,7 +19,7 @@ services:
       - ushspa-network
     volumes:
       - .:/app
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8007 --reload
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8007 --workers 2
     healthcheck:
       test: ["CMD", "python3", "-c",
              "import urllib.request; urllib.request.urlopen('http://localhost:8007/api/v1/health/')"]
