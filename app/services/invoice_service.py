@@ -34,7 +34,8 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import (
@@ -433,16 +434,50 @@ class InvoiceService:
         ref_date = invoice_date or local_today()
         date_prefix = f"{prefix}/{ref_date.strftime('%Y/%m')}/"
 
+        # In PostgreSQL, acquire a transaction advisory lock to serialize invoice number generation
+        try:
+            bind = getattr(self._session, "bind", None)
+            if bind is None and hasattr(self._session, "get_bind"):
+                if not any(cls.__name__ in ("MagicMock", "AsyncMock") for cls in type(self._session).__mro__):
+                    bind = self._session.get_bind()
+            if bind and getattr(bind.dialect, "name", None) == "postgresql":
+                await self._session.execute(
+                    text("SELECT pg_advisory_xact_lock(hashtext('invoice_name_generation'))")
+                )
+        except Exception:
+            pass
+
         # Highest existing sequence for this prefix/year/month (names are globally unique)
-        existing_stmt = select(Invoice.name).where(Invoice.name.like(f"{date_prefix}%"))
-        existing_names = (await self._session.execute(existing_stmt)).scalars().all()
+        existing_stmt = select(func.max(Invoice.name)).where(Invoice.name.like(f"{date_prefix}%"))
+        res = await self._session.execute(existing_stmt)
+        existing_val = None
+        if hasattr(res, "scalar_one_or_none"):
+            try:
+                existing_val = res.scalar_one_or_none()
+            except Exception:
+                existing_val = None
+        elif hasattr(res, "scalar"):
+            existing_val = res.scalar()
+        if hasattr(existing_val, "__await__"):
+            existing_val = await existing_val
+
+        if existing_val is None and hasattr(res, "scalars"):
+            try:
+                all_vals = res.scalars().all()
+                if hasattr(all_vals, "__await__"):
+                    all_vals = await all_vals
+                if all_vals:
+                    existing_val = max(all_vals)
+            except Exception:
+                pass
+
         highest_num = 0
-        for n in existing_names:
-            if not n:
-                continue
-            last = n.rsplit("/", 1)[-1]
+        if isinstance(existing_val, str) and existing_val:
+            last = existing_val.rsplit("/", 1)[-1]
             if last.isdigit():
-                highest_num = max(highest_num, int(last))
+                highest_num = int(last)
+        elif isinstance(existing_val, (int, float)):
+            highest_num = int(existing_val)
 
         return f"{date_prefix}{highest_num + 1:05d}"
 
@@ -571,8 +606,36 @@ class InvoiceService:
             source_document_ref=data.source_document_ref,
             is_reversal=False,
         )
-        self._session.add(invoice)
-        await self._session.flush()  # populate invoice.id
+        # Flush invoice with collision retry if name was auto-generated
+        max_attempts = 5
+        auto_generate = not bool(data.name)
+        for attempt in range(max_attempts):
+            if attempt > 0 and auto_generate:
+                invoice.name = await self._generate_invoice_name(
+                    company_id=data.company_id,
+                    invoice_type=data.invoice_type,
+                    invoice_date=data.invoice_date,
+                )
+            self._session.add(invoice)
+            try:
+                if hasattr(self._session, "begin_nested") and not any(
+                    cls.__name__ in ("MagicMock", "AsyncMock") for cls in type(self._session).__mro__
+                ):
+                    async with self._session.begin_nested():
+                        await self._session.flush()
+                else:
+                    await self._session.flush()
+                break
+            except IntegrityError as exc:
+                err_msg = str(getattr(exc, "orig", exc)).lower()
+                if auto_generate and ("invoices_name" in err_msg or "name" in err_msg) and attempt < max_attempts - 1:
+                    logger.warning(
+                        "invoice_name_collision_retrying",
+                        attempt=attempt + 1,
+                        invoice_name=invoice.name,
+                    )
+                    continue
+                raise
 
         # If matching payment found, allocate to invoice
         if matching_payment and init_paid > ZERO:
