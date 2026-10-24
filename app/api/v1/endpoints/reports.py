@@ -82,7 +82,13 @@ async def general_ledger(
     if account_id:
         q = q.where(JournalItem.account_id.in_(account_id))
 
-    total = (await db.execute(select(func.count()).select_from(q.subquery()))).scalar_one()
+    subq = q.subquery()
+    stats_q = select(
+        func.count(subq.c.id),
+        func.coalesce(func.sum(subq.c.debit_amount), Decimal("0.000")),
+        func.coalesce(func.sum(subq.c.credit_amount), Decimal("0.000")),
+    )
+    total, total_debit, total_credit = (await db.execute(stats_q)).first()
     rows = (await db.execute(q.offset((page - 1) * page_size).limit(page_size))).all()
 
     # Compute running balance per account
@@ -114,6 +120,8 @@ async def general_ledger(
         "data": {
             "lines": lines,
             "total": total,
+            "total_debit": float(Decimal(str(total_debit))),
+            "total_credit": float(Decimal(str(total_credit))),
             "page": page,
             "page_size": page_size,
             "date_from": date_from.isoformat(),

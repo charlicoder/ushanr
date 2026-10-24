@@ -149,7 +149,14 @@ async def list_invoices(
     if invoice_type:
         q = q.where(Invoice.invoice_type == invoice_type)
     if state:
-        q = q.where(Invoice.state == state)
+        s_lower = state.lower().strip()
+        if s_lower == "pending":
+            q = q.where(
+                (Invoice.state.in_(["draft", "posted"])) &
+                (Invoice.amount_residual > 0)
+            )
+        else:
+            q = q.where(Invoice.state == state)
     if partner_id:
         q = q.where(Invoice.partner_id == partner_id)
     if date_from:
@@ -161,8 +168,14 @@ async def list_invoices(
             (Invoice.name.ilike(f"%{search}%")) | (Invoice.reference.ilike(f"%{search}%"))
         )
 
-    count_q = select(func.count()).select_from(q.subquery())
-    total = (await db.execute(count_q)).scalar_one()
+    base_subq = q.subquery()
+    stats_q = select(
+        func.count(base_subq.c.id),
+        func.coalesce(func.sum(base_subq.c.amount_total), 0),
+        func.coalesce(func.sum(base_subq.c.amount_paid), 0),
+        func.coalesce(func.sum(base_subq.c.amount_residual), 0),
+    )
+    total, total_amount, paid_amount, residual_amount = (await db.execute(stats_q)).first()
 
     q = (
         q.options(selectinload(Invoice.lines))
@@ -194,7 +207,12 @@ async def list_invoices(
             "total": total,
             "page": page,
             "page_size": page_size,
-            "pages": (total + page_size - 1) // page_size,
+            "pages": (total + page_size - 1) // page_size if total else 0,
+            "analytics": {
+                "total_amount": float(Decimal(str(total_amount))),
+                "paid_amount": float(Decimal(str(paid_amount))),
+                "residual_amount": float(Decimal(str(residual_amount))),
+            },
         },
     }
 

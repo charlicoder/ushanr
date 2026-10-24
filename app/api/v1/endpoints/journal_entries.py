@@ -97,7 +97,11 @@ async def list_journal_entries(
     if journal_id:
         q = q.where(JournalEntry.journal_id == journal_id)
     if state:
-        q = q.where(JournalEntry.state == state)
+        s_lower = state.lower().strip()
+        if s_lower == "pending":
+            q = q.where(JournalEntry.state.in_(["draft"]))
+        else:
+            q = q.where(JournalEntry.state == state)
     if date_from:
         q = q.where(JournalEntry.accounting_date >= date_from)
     if date_to:
@@ -111,8 +115,12 @@ async def list_journal_entries(
             (JournalEntry.reference.ilike(f"%{search}%"))
         )
 
-    count_q = select(func.count()).select_from(q.subquery())
-    total = (await db.execute(count_q)).scalar_one()
+    base_subq = q.subquery()
+    stats_q = select(
+        func.count(base_subq.c.id),
+        func.coalesce(func.sum(base_subq.c.amount_total), 0),
+    )
+    total, total_amount = (await db.execute(stats_q)).first()
 
     q = (
         q.options(selectinload(JournalEntry.items))
@@ -170,9 +178,10 @@ async def list_journal_entries(
         "data": {
             "items": [_entry_to_dict(e) for e in rows],
             "total": total,
+            "total_amount": float(Decimal(str(total_amount))),
             "page": page,
             "page_size": page_size,
-            "pages": (total + page_size - 1) // page_size,
+            "pages": (total + page_size - 1) // page_size if total else 0,
         },
     }
 
