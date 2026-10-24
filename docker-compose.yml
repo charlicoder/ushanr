@@ -1,3 +1,9 @@
+# =============================================================================
+# ushanr — docker-compose.yml (DEVELOPMENT)
+# For production use: docker compose -f docker-compose.prod.yml up --build -d
+#                 OR: ./start-prod.sh
+# =============================================================================
+
 services:
   web:
     build:

@@ -1,0 +1,45 @@
+# =============================================================================
+# ushanr — docker-compose.prod.yml (PRODUCTION)
+#
+# - Uses the production Dockerfile (multi-stage, no dev tools)
+# - NO source volume mount (code baked into image)
+# - Workers controlled by WORKERS env var in .env (default 2)
+# - Requires .env to have: APP_ENV=production
+#
+# Usage:
+#   ./start-prod.sh
+#   docker compose -f docker-compose.prod.yml up --build -d
+#   docker compose -f docker-compose.prod.yml logs -f
+#   docker compose -f docker-compose.prod.yml down
+# =============================================================================
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile           # Multi-stage production build
+    container_name: ushanr
+    restart: unless-stopped
+    ports:
+      - "8007:8007"
+    expose:
+      - "8007"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - .env                           # Must have APP_ENV=production, WORKERS>=2
+    environment:
+      - IN_DOCKER=1
+    networks:
+      - ushspa-network
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8007/api/v1/health/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  ushspa-network:
+    external: true
