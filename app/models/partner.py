@@ -10,7 +10,7 @@ from __future__ import annotations
 import uuid
 from enum import Enum
 
-from sqlalchemy import Boolean, ForeignKey, Numeric, String, Text
+from sqlalchemy import Boolean, ForeignKey, Index, Numeric, String, Text, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -31,6 +31,15 @@ class Partner(UUIDPrimaryKeyMixin, CompanyMixin, TimestampMixin, SoftDeleteMixin
     Preserves and extends the original `partners` table.
     """
     __tablename__ = "partners"
+    __table_args__ = (
+        Index(
+            "uq_partners_company_external_active",
+            "company_id",
+            "external_id",
+            unique=True,
+            postgresql_where=text("is_deleted = false AND external_id IS NOT NULL"),
+        ),
+    )
 
     # Identity
     name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)

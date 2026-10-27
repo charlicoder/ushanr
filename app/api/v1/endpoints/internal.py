@@ -27,6 +27,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
@@ -210,13 +211,16 @@ async def _ensure_partner(
             )
 
     result = await session.execute(
-        select(Partner).where(
+        select(Partner)
+        .where(
             Partner.company_id == company_id,
             Partner.external_id == external_id,
             Partner.is_deleted.is_(False),
         )
+        .order_by(Partner.created_at.asc())
+        .limit(1)
     )
-    partner = result.scalar_one_or_none()
+    partner = result.scalars().first()
     if partner is not None:
         return partner, False
 
@@ -239,8 +243,27 @@ async def _ensure_partner(
         currency_code=clean_currency,
         is_active=True,
     )
-    session.add(partner)
-    await session.flush()
+    try:
+        # SAVEPOINT so a concurrent insert of the same (company, external_id) only
+        # rolls back this insert, not the caller's transaction.
+        async with session.begin_nested():
+            session.add(partner)
+            await session.flush()
+    except IntegrityError:
+        existing = await session.execute(
+            select(Partner)
+            .where(
+                Partner.company_id == company_id,
+                Partner.external_id == str(external_id),
+                Partner.is_deleted.is_(False),
+            )
+            .order_by(Partner.created_at.asc())
+            .limit(1)
+        )
+        found = existing.scalars().first()
+        if found is None:
+            raise
+        return found, False
     return partner, True
 
 

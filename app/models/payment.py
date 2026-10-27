@@ -40,6 +40,7 @@ class PaymentMethod(str, Enum):
     MASTERCARD = "MASTERCARD"
     TAP = "TAP"
     MYFATOORAH = "MyFatoorah"
+    DEEMA = "Deema"
     OTHER = "other"
 
 
