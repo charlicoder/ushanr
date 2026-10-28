@@ -124,6 +124,10 @@ class FiscalYearNotFoundError(NotFoundError):
     code = "FISCAL_YEAR_NOT_FOUND"
 
 
+class FeedbackNotFoundError(NotFoundError):
+    code = "FEEDBACK_NOT_FOUND"
+
+
 # ── HTTP 409 ──────────────────────────────────────────────────────────────────
 
 class ConflictError(ANRBaseError):
@@ -138,6 +142,10 @@ class EntryAlreadyPostedError(ConflictError):
 
 class InvoiceAlreadyPaidError(ConflictError):
     code = "INVOICE_ALREADY_PAID"
+
+
+class FeedbackAlreadySubmittedError(ConflictError):
+    code = "ALREADY_SUBMITTED"
 
 
 # ── HTTP 422 ──────────────────────────────────────────────────────────────────

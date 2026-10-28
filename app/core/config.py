@@ -144,6 +144,12 @@ class Settings(BaseSettings):
             urls.append(f"{self.API_GATEWAY_BASE_URL.strip().rstrip('/')}{path}")
         return list(dict.fromkeys(urls))
 
+    # ── Feedback ──────────────────────────────────────────────────────────
+    FEEDBACK_PUBLIC_BASE_URL: str = Field(
+        default="https://ushspa.co/feedback",
+        description="Public base URL of the customer feedback page; the link is {base}/{public_token}.",
+    )
+
     INTERNAL_API_KEY: str = Field(
         default="ushanr-internal-secret-change-in-prod",
         description="Shared secret for internal service-to-service endpoints (X-Internal-Key header).",

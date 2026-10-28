@@ -14,6 +14,7 @@ from app.api.v1.endpoints import (
     bank,
     budgets,
     companies,
+    feedback,
     fiscal,
     health,
     internal,
@@ -60,6 +61,9 @@ api_router.include_router(budgets.router, prefix="/budgets", tags=["Budgets"])
 
 # Reports
 api_router.include_router(reports.router, prefix="/reports", tags=["Reports"])
+
+# Booking feedback (staff link creation, public submit, admin list/summary)
+api_router.include_router(feedback.router, tags=["Feedback"])
 
 # Internal (service-to-service only — protected by X-Internal-Key)
 api_router.include_router(internal.router, prefix="/internal", tags=["Internal"])
