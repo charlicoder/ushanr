@@ -144,6 +144,35 @@ class Settings(BaseSettings):
             urls.append(f"{self.API_GATEWAY_BASE_URL.strip().rstrip('/')}{path}")
         return list(dict.fromkeys(urls))
 
+    # ── Workforce history (SQS consumer + daily job) ─────────────────────
+    USHBOOKNPAY_BASE_URL: str = Field(
+        default="http://ushbooknpay:8000",
+        description="Base URL of ushbooknpay (completed-sessions internal endpoint).",
+    )
+    USHBOOKNPAY_BASE_PATH: str = Field(default="/booknpay")
+    WORKFORCE_SOURCE_TIMEOUT: float = Field(default=60.0, description="HTTP timeout for daily-job source calls (s).")
+    AWS_REGION: str = Field(default="ap-south-1")
+    AWS_ACCESS_KEY_ID: str = Field(default="")
+    AWS_SECRET_ACCESS_KEY: str = Field(default="")
+    AWS_SQS_WORKFORCE_QUEUE_URL: str = Field(default="", description="Workforce SQS queue; consumer disabled when empty.")
+    WORKFORCE_SQS_MAX_MESSAGES: int = Field(default=10, ge=1, le=10)
+    WORKFORCE_SQS_WAIT_SECONDS: int = Field(default=20, ge=0, le=20)
+    WORKFORCE_SQS_VISIBILITY_TIMEOUT: int = Field(default=300, ge=30)
+    WORKFORCE_SQS_MAX_CONCURRENCY: int = Field(default=3, ge=1, le=10)
+    WORKFORCE_DAY_CLOSE_CATCHUP_DAYS: int = Field(default=7, ge=1, le=31, description="Look-back for never-processed days.")
+    WORKFORCE_DAY_CLOSE_RECHECK_DAYS: int = Field(default=3, ge=0, le=14, description="Re-pull completed sessions for last N days.")
+
+    @property
+    def ushbooknpay_urls(self) -> list[str]:
+        """Candidate ushbooknpay base URLs, in order of preference (deduplicated)."""
+        urls: list[str] = []
+        if self.USHBOOKNPAY_BASE_URL and self.USHBOOKNPAY_BASE_URL.strip():
+            urls.append(self.USHBOOKNPAY_BASE_URL.strip().rstrip("/"))
+        if self.API_GATEWAY_BASE_URL and self.API_GATEWAY_BASE_URL.strip():
+            path = "/" + self.USHBOOKNPAY_BASE_PATH.strip().strip("/") if self.USHBOOKNPAY_BASE_PATH.strip("/ ") else ""
+            urls.append(f"{self.API_GATEWAY_BASE_URL.strip().rstrip('/')}{path}")
+        return list(dict.fromkeys(urls))
+
     # ── Feedback ──────────────────────────────────────────────────────────
     FEEDBACK_PUBLIC_BASE_URL: str = Field(
         default="https://ushspa.co/feedback",

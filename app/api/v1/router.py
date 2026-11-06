@@ -26,6 +26,7 @@ from app.api.v1.endpoints import (
     payments,
     reports,
     taxes,
+    workforce,
 )
 
 api_router = APIRouter(prefix="/api/v1")
@@ -67,3 +68,6 @@ api_router.include_router(feedback.router, tags=["Feedback"])
 
 # Internal (service-to-service only — protected by X-Internal-Key)
 api_router.include_router(internal.router, prefix="/internal", tags=["Internal"])
+
+# Workforce (therapist) history & analytics
+api_router.include_router(workforce.router, prefix="/workforce", tags=["Workforce"])

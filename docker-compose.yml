@@ -34,6 +34,24 @@ services:
       retries: 3
       start_period: 30s
 
+  workforce-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ushanr-workforce-worker
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - .env
+    environment:
+      - IN_DOCKER=1
+    networks:
+      - ushspa-network
+    volumes:
+      - .:/app
+    command: python -m app.workers.workforce_worker
+
 networks:
   ushspa-network:
     external: true

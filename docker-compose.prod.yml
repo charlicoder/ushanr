@@ -40,6 +40,24 @@ services:
       retries: 3
       start_period: 40s
 
+  # Workforce history worker: SQS consumer + 01:00 daily job. Separate process so the
+  # API workers never share CPU / DB pool with it.
+  workforce-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ushanr-workforce-worker
+    restart: unless-stopped
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    env_file:
+      - .env
+    environment:
+      - IN_DOCKER=1
+    networks:
+      - ushspa-network
+    command: python -m app.workers.workforce_worker
+
 networks:
   ushspa-network:
     external: true

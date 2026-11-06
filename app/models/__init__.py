@@ -20,3 +20,11 @@ from app.models.payment import Payment, PaymentAllocation  # noqa: F401
 from app.models.asset import Asset, AssetDepreciationLine  # noqa: F401
 from app.models.sequence import DocumentSequence  # noqa: F401
 from app.models.tax import Tax, TaxGroup  # noqa: F401
+from app.models.workforce import (  # noqa: F401
+    CompletedSession,
+    ProcessedEvent,
+    ScheduleChangeLog,
+    TherapistActivitySegment,
+    TherapistDailyRoster,
+    TherapistDailySummary,
+)
