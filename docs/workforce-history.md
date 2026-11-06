@@ -41,12 +41,18 @@ Range is capped at 92 days.
 
 ## Configuration
 
-| Service | Variable | Notes |
-|---|---|---|
-| ushauth | `AWS_SQS_WORKFORCE_QUEUE_URL` | workforce queue URL (relay) |
-| ushauth | `WORKFORCE_HISTORY_ENABLED` | `False` disables capture entirely |
-| ushanr | `AWS_SQS_WORKFORCE_QUEUE_URL`, `AWS_REGION`, `AWS_ACCESS_KEY_ID/SECRET` | consumer disabled when queue URL empty |
-| ushanr | `USHAUTH_BASE_URL`, `USHBOOKNPAY_BASE_URL` (+ `API_GATEWAY_BASE_URL`, `*_BASE_PATH`), `USHSPA_TOKEN` | daily-job sources |
+> **Current Status (Paused / Disabled by Default):**
+> The `workforce-relay` (in `ushauth`), `workforce-worker` (in `ushanr`), and the 1:00 AM daily job are **disabled by default** in Docker Compose and application settings so they do not run until you are ready to activate them.
+
+| Service | Variable | Default | Notes |
+|---|---|---|---|
+| ushauth | `WORKFORCE_HISTORY_ENABLED` | `True` | Captures schedule edits locally in `outbox_events` (`False` disables capture) |
+| ushauth | `WORKFORCE_RELAY_ENABLED` | `False` | Set `True` (and uncomment `workforce-relay` in `docker-compose.prod.yml`) to publish to SQS |
+| ushauth | `AWS_SQS_WORKFORCE_QUEUE_URL` | `""` | Workforce SQS queue URL |
+| ushanr | `WORKFORCE_CONSUMER_ENABLED` | `False` | Set `True` (and uncomment `workforce-worker` in `docker-compose*.yml`) to poll SQS |
+| ushanr | `WORKFORCE_DAILY_JOB_ENABLED` | `False` | Set `True` to allow processing the 1:00 AM `workforce.day_close.requested` cron event |
+| ushanr | `AWS_SQS_WORKFORCE_QUEUE_URL`, `AWS_REGION`, `AWS_ACCESS_KEY_ID/SECRET` | `""` | SQS credentials & queue URL |
+| ushanr | `USHAUTH_BASE_URL`, `USHBOOKNPAY_BASE_URL` (+ `API_GATEWAY_BASE_URL`, `*_BASE_PATH`), `USHSPA_TOKEN` | — | Daily-job internal sources |
 
 ## Rollout
 

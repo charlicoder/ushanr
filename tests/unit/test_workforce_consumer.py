@@ -20,10 +20,22 @@ def test_yesterday_local_uses_kuwait_date():
 
 
 @pytest.mark.asyncio
-async def test_day_close_message_runs_daily_job_for_yesterday():
+async def test_day_close_message_skipped_when_disabled():
     env = {"event_type": wc.DAY_CLOSE_EVENT, "occurred_at": "2026-11-06T01:00:00+03:00", "data": {}}
-    with patch.object(wc.service, "run_daily_job", AsyncMock(return_value=[])) as job, patch.object(
-        wc, "get_session_factory", return_value="factory"
+    with patch.object(wc.service, "run_daily_job", AsyncMock(return_value=[])) as job:
+        await wc.handle_message(env)
+    job.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_day_close_message_runs_daily_job_for_yesterday():
+    from types import SimpleNamespace
+
+    env = {"event_type": wc.DAY_CLOSE_EVENT, "occurred_at": "2026-11-06T01:00:00+03:00", "data": {}}
+    with (
+        patch.object(wc, "get_settings", return_value=SimpleNamespace(WORKFORCE_DAILY_JOB_ENABLED=True)),
+        patch.object(wc.service, "run_daily_job", AsyncMock(return_value=[])) as job,
+        patch.object(wc, "get_session_factory", return_value="factory"),
     ):
         await wc.handle_message(env)
     job.assert_awaited_once_with("factory", date(2026, 11, 5))
@@ -31,9 +43,13 @@ async def test_day_close_message_runs_daily_job_for_yesterday():
 
 @pytest.mark.asyncio
 async def test_day_close_message_with_explicit_date():
+    from types import SimpleNamespace
+
     env = {"event_type": wc.DAY_CLOSE_EVENT, "data": {"date": "2026-10-01"}}
-    with patch.object(wc.service, "run_daily_job", AsyncMock(return_value=[])) as job, patch.object(
-        wc, "get_session_factory", return_value="f"
+    with (
+        patch.object(wc, "get_settings", return_value=SimpleNamespace(WORKFORCE_DAILY_JOB_ENABLED=True)),
+        patch.object(wc.service, "run_daily_job", AsyncMock(return_value=[])) as job,
+        patch.object(wc, "get_session_factory", return_value="f"),
     ):
         await wc.handle_message(env)
     job.assert_awaited_once_with("f", date(2026, 10, 1))

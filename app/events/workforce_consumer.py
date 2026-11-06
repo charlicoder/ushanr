@@ -65,6 +65,9 @@ async def handle_message(envelope: dict[str, Any]) -> None:
         return
 
     if event_type == DAY_CLOSE_EVENT:
+        if not get_settings().WORKFORCE_DAILY_JOB_ENABLED:
+            logger.info("workforce_daily_job_disabled", reason="WORKFORCE_DAILY_JOB_ENABLED=False")
+            return
         data = envelope.get("data") or {}
         if data.get("date"):
             target = datetime.fromisoformat(str(data["date"])).date()
@@ -122,6 +125,9 @@ class WorkforceConsumer:
 
     async def run(self) -> None:
         s = self._s
+        if not s.WORKFORCE_CONSUMER_ENABLED:
+            logger.warning("workforce_consumer_disabled", reason="WORKFORCE_CONSUMER_ENABLED=False")
+            return
         if not self._queue:
             logger.warning("workforce_consumer_disabled", reason="AWS_SQS_WORKFORCE_QUEUE_URL not set")
             return

@@ -34,23 +34,25 @@ services:
       retries: 3
       start_period: 30s
 
-  workforce-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: ushanr-workforce-worker
-    restart: unless-stopped
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    env_file:
-      - .env
-    environment:
-      - IN_DOCKER=1
-    networks:
-      - ushspa-network
-    volumes:
-      - .:/app
-    command: python -m app.workers.workforce_worker
+  # Workforce history worker (SQS consumer + 01:00 daily job) — disabled for now.
+  # Uncomment when ready to activate (and set WORKFORCE_CONSUMER_ENABLED=true, WORKFORCE_DAILY_JOB_ENABLED=true).
+  # workforce-worker:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile
+  #   container_name: ushanr-workforce-worker
+  #   restart: unless-stopped
+  #   extra_hosts:
+  #     - "host.docker.internal:host-gateway"
+  #   env_file:
+  #     - .env
+  #   environment:
+  #     - IN_DOCKER=1
+  #   networks:
+  #     - ushspa-network
+  #   volumes:
+  #     - .:/app
+  #   command: python -m app.workers.workforce_worker
 
 networks:
   ushspa-network:

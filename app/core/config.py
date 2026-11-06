@@ -155,6 +155,14 @@ class Settings(BaseSettings):
     AWS_ACCESS_KEY_ID: str = Field(default="")
     AWS_SECRET_ACCESS_KEY: str = Field(default="")
     AWS_SQS_WORKFORCE_QUEUE_URL: str = Field(default="", description="Workforce SQS queue; consumer disabled when empty.")
+    WORKFORCE_CONSUMER_ENABLED: bool = Field(
+        default=False,
+        description="Enable the SQS workforce consumer & 1AM daily job (disabled by default until activated).",
+    )
+    WORKFORCE_DAILY_JOB_ENABLED: bool = Field(
+        default=False,
+        description="Enable processing of the 1AM workforce.day_close.requested cron event.",
+    )
     WORKFORCE_SQS_MAX_MESSAGES: int = Field(default=10, ge=1, le=10)
     WORKFORCE_SQS_WAIT_SECONDS: int = Field(default=20, ge=0, le=20)
     WORKFORCE_SQS_VISIBILITY_TIMEOUT: int = Field(default=300, ge=30)
