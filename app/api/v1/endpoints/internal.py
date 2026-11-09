@@ -39,6 +39,7 @@ from app.models.invoice import Invoice, InvoiceState, InvoiceType
 from app.models.journal import Journal, JournalType
 from app.models.journal_entry import EntryState, JournalEntry
 from app.models.partner import Partner, PartnerType
+from app.schemas.feedback import CreateFeedbackLinkRequest
 from app.services.invoice_service import (
     CreateInvoiceData,
     InvoiceLineData,
@@ -1083,3 +1084,32 @@ async def create_credit_note(
         state=credit_note.state,
         amount_total=Decimal(str(credit_note.amount_total)),
     )
+
+
+# ── Booking feedback link (called by ushnotice on booking.completed) ─────────
+
+
+@router.post(
+    "/feedback-links/",
+    summary="Create (or return) the feedback link of a booking — service-to-service",
+    dependencies=[InternalAuth],
+)
+async def create_feedback_link_internal(
+    body: CreateFeedbackLinkRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Idempotent: a booking has at most one feedback link (same rule as the staff endpoint)."""
+    from app.repositories.feedback_repository import FeedbackRepository
+    from app.services.feedback_service import (
+        FeedbackService,
+        FeedbackUrlBuilder,
+        SecureTokenGenerator,
+    )
+
+    service = FeedbackService(
+        repository=FeedbackRepository(db),
+        token_generator=SecureTokenGenerator(),
+        url_builder=FeedbackUrlBuilder(get_settings().FEEDBACK_PUBLIC_BASE_URL),
+    )
+    result = await service.create_link(body, company_id=body.company_id, created_by="system:booking.completed")
+    return {"success": True, "data": result.model_dump(mode="json")}
