@@ -55,3 +55,37 @@ async def test_get_optional_company_id_none_passed():
 
     res = await get_optional_company_id(company_id=None, db=mock_db)
     assert res == active_id
+
+
+def test_ushauth_urls_sanitizes_misconfigured_path():
+    from app.core.config import Settings
+
+    # Case 1: USHAUTH_BASE_URL mistakenly set to "/uauth" path
+    s = Settings(
+        USHAUTH_BASE_URL="/uauth",
+        API_GATEWAY_BASE_URL="http://host.docker.internal:8000",
+        USHAUTH_BASE_PATH="/uauth",
+    )
+    urls = s.ushauth_urls
+    assert urls == ["http://host.docker.internal:8000/uauth"]
+    for u in urls:
+        assert u.startswith(("http://", "https://"))
+
+    # Case 2: Normal direct URL + gateway fallback
+    s2 = Settings(
+        USHAUTH_BASE_URL="http://ushauth:8002",
+        API_GATEWAY_BASE_URL="http://host.docker.internal:8000",
+        USHAUTH_BASE_PATH="/uauth",
+    )
+    assert s2.ushauth_urls == [
+        "http://ushauth:8002",
+        "http://host.docker.internal:8000/uauth",
+    ]
+
+    # Case 3: Relative path with no gateway does not produce invalid scheme URLs
+    s3 = Settings(
+        USHAUTH_BASE_URL="/uauth",
+        API_GATEWAY_BASE_URL="",
+    )
+    assert s3.ushauth_urls == []
+

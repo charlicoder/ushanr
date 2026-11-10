@@ -32,6 +32,8 @@ async def _get_json(urls: list[str], path: str, params: dict[str, Any], service:
     last: Exception | None = None
     async with httpx.AsyncClient(timeout=settings.WORKFORCE_SOURCE_TIMEOUT) as client:
         for base in urls:
+            if not base.startswith(("http://", "https://")):
+                continue
             try:
                 resp = await client.get(f"{base}{path}", params=params, headers=headers)
                 resp.raise_for_status()

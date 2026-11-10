@@ -120,7 +120,7 @@ class Settings(BaseSettings):
 
     # ── Inter-service ─────────────────────────────────────────────────────
     USHAUTH_BASE_URL: str = Field(
-        default="http://ushauth:8000",
+        default="http://ushauth:8002",
         description="Base URL of the ushauth service for permission resolution.",
     )
     USHSPA_TOKEN: str = Field(
@@ -133,20 +133,31 @@ class Settings(BaseSettings):
     #   API_GATEWAY_BASE_URL=https://api.ushspa.co   USHAUTH_BASE_PATH=/uauth
     API_GATEWAY_BASE_URL: str = Field(default="")
     USHAUTH_BASE_PATH: str = Field(default="/uauth")
+
     @property
     def ushauth_urls(self) -> list[str]:
-        """Candidate ushauth base URLs, in order of preference (deduplicated)."""
+        """Candidate ushauth base URLs, in order of preference (deduplicated).
+
+        Only returns absolute URLs with an http:// or https:// scheme so downstream
+        HTTP clients (httpx) never raise UnsupportedProtocol errors.
+        """
         urls: list[str] = []
-        if self.USHAUTH_BASE_URL and self.USHAUTH_BASE_URL.strip():
-            urls.append(self.USHAUTH_BASE_URL.strip().rstrip("/"))
-        if self.API_GATEWAY_BASE_URL and self.API_GATEWAY_BASE_URL.strip():
+        base = (self.USHAUTH_BASE_URL or "").strip().rstrip("/")
+        if base.startswith(("http://", "https://")):
+            urls.append(base)
+        elif base.startswith("/") and self.API_GATEWAY_BASE_URL.strip().startswith(("http://", "https://")):
+            # Misconfigured as a path (e.g. USHAUTH_BASE_URL=/uauth instead of USHAUTH_BASE_PATH)
+            urls.append(f"{self.API_GATEWAY_BASE_URL.strip().rstrip('/')}{base}")
+
+        if self.API_GATEWAY_BASE_URL and self.API_GATEWAY_BASE_URL.strip().startswith(("http://", "https://")):
             path = "/" + self.USHAUTH_BASE_PATH.strip().strip("/") if self.USHAUTH_BASE_PATH.strip("/ ") else ""
             urls.append(f"{self.API_GATEWAY_BASE_URL.strip().rstrip('/')}{path}")
-        return list(dict.fromkeys(urls))
+
+        return [u for u in dict.fromkeys(urls) if u.startswith(("http://", "https://"))]
 
     # ── Workforce history (SQS consumer + daily job) ─────────────────────
     USHBOOKNPAY_BASE_URL: str = Field(
-        default="http://ushbooknpay:8000",
+        default="http://ushbooknpay:8003",
         description="Base URL of ushbooknpay (completed-sessions internal endpoint).",
     )
     USHBOOKNPAY_BASE_PATH: str = Field(default="/booknpay")
@@ -172,14 +183,23 @@ class Settings(BaseSettings):
 
     @property
     def ushbooknpay_urls(self) -> list[str]:
-        """Candidate ushbooknpay base URLs, in order of preference (deduplicated)."""
+        """Candidate ushbooknpay base URLs, in order of preference (deduplicated).
+
+        Only returns absolute URLs with an http:// or https:// scheme.
+        """
         urls: list[str] = []
-        if self.USHBOOKNPAY_BASE_URL and self.USHBOOKNPAY_BASE_URL.strip():
-            urls.append(self.USHBOOKNPAY_BASE_URL.strip().rstrip("/"))
-        if self.API_GATEWAY_BASE_URL and self.API_GATEWAY_BASE_URL.strip():
+        base = (self.USHBOOKNPAY_BASE_URL or "").strip().rstrip("/")
+        if base.startswith(("http://", "https://")):
+            urls.append(base)
+        elif base.startswith("/") and self.API_GATEWAY_BASE_URL.strip().startswith(("http://", "https://")):
+            # Misconfigured as a path (e.g. USHBOOKNPAY_BASE_URL=/booknpay instead of USHBOOKNPAY_BASE_PATH)
+            urls.append(f"{self.API_GATEWAY_BASE_URL.strip().rstrip('/')}{base}")
+
+        if self.API_GATEWAY_BASE_URL and self.API_GATEWAY_BASE_URL.strip().startswith(("http://", "https://")):
             path = "/" + self.USHBOOKNPAY_BASE_PATH.strip().strip("/") if self.USHBOOKNPAY_BASE_PATH.strip("/ ") else ""
             urls.append(f"{self.API_GATEWAY_BASE_URL.strip().rstrip('/')}{path}")
-        return list(dict.fromkeys(urls))
+
+        return [u for u in dict.fromkeys(urls) if u.startswith(("http://", "https://"))]
 
     # ── Feedback ──────────────────────────────────────────────────────────
     FEEDBACK_PUBLIC_BASE_URL: str = Field(

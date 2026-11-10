@@ -103,6 +103,8 @@ async def _ushauth_get(
         return None
 
     for base in urls:
+        if not base.startswith(("http://", "https://")):
+            continue
         url = f"{base}{path}"
         last: httpx.Response | None = None
         failed = False
